@@ -1,0 +1,20 @@
+services:
+  lidarslam:
+    build:
+      context: .
+      dockerfile: Dockerfile.lidarslam
+    image: togo-lidarslam:jazzy
+    network_mode: host
+    stdin_open: true
+    tty: true
+    environment:
+      ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-0}
+      RMW_IMPLEMENTATION: ${RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}
+      RCUTILS_COLORIZED_OUTPUT: 1
+      DISPLAY: ${DISPLAY}
+    volumes:
+      - ./bags:/bags:rw
+      - ./slam_output:/ws/src/lidarslam_ros2/output:rw
+      - /tmp/.X11-unix:/tmp/.X11-unix:ro
+    command: bash
+
