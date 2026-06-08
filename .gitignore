@@ -1,0 +1,11 @@
+build/
+install/
+log/
+bags/
+slam_output/
+lidarslam_ros2/
+*.bak*
+*.bak-*
+*.pyc
+__pycache__/
+.DS_Store

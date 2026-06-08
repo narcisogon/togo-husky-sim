@@ -290,3 +290,156 @@ robot.yaml
 4. Add or launch Nav2.
 5. Replace the generic A300 config with the real TOGO config when available.
 6. Improve lunar terrain using a real heightmap/DEM instead of the simple SDF workaround.
+
+## LiDAR SLAM Docker Setup
+
+The SLAM stack is built in Docker using ROS 2 Jazzy. The Docker image builds the `lidarslam_ros2` workspace and provides these packages:
+
+```text
+lidarslam
+rko_lio
+graph_based_slam
+ndt_omp_ros2
+lidarslam_msgs
+```
+
+Important files:
+
+```text
+Dockerfile.lidarslam              Builds the Jazzy SLAM image
+docker-compose.lidarslam.yml      Runs the SLAM container with host networking
+docker/lidarslam_entrypoint.sh    Sources ROS and the built SLAM workspace
+lidarslam_ros2/                   Third-party SLAM repo, not committed if using .gitignore
+bags/                             Optional rosbag input/output folder
+slam_output/                      Optional map / SLAM output folder
+```
+
+### Clone The SLAM Repo
+
+If `lidarslam_ros2/` is not present, clone it from the Husky folder:
+
+```bash
+cd /mnt/c/Users/Username/OneDrive/Desktop/husky
+git clone --recursive https://github.com/rsasaki0109/lidarslam_ros2.git
+```
+
+### Build The Docker Image
+
+```bash
+cd /mnt/c/Users/Username/OneDrive/Desktop/husky
+docker compose -f docker-compose.lidarslam.yml build
+```
+
+This creates the image:
+
+```text
+togo-lidarslam:jazzy
+```
+
+### Enter The SLAM Container
+
+```bash
+cd /mnt/c/Users/Username/OneDrive/Desktop/husky
+docker compose -f docker-compose.lidarslam.yml run --rm lidarslam
+```
+
+Inside the container, verify the packages:
+
+```bash
+ros2 pkg list | grep -E "lidarslam|rko|ndt|graph"
+```
+
+Expected packages include:
+
+```text
+graph_based_slam
+lidarslam
+lidarslam_msgs
+ndt_omp_ros2
+rko_lio
+```
+
+### ROS Network Settings
+
+The compose file uses host networking and defaults to:
+
+```text
+ROS_DOMAIN_ID=0
+RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+```
+
+If your sim or robot uses a different domain, override it when starting the container:
+
+```bash
+ROS_DOMAIN_ID=7 docker compose -f docker-compose.lidarslam.yml run --rm lidarslam
+```
+
+Inside Docker, confirm it can see the sim topics:
+
+```bash
+ros2 topic list | grep -E "lidar3d|points|imu|scan"
+```
+
+### Run Live RKO-LIO
+
+The online RKO-LIO launch consumes a live `PointCloud2` and `Imu` stream:
+
+```bash
+ros2 launch rko_lio odometry.launch.py \
+  mode:=online \
+  lidar_topic:=/a300_0000/sensors/lidar3d_0/points \
+  imu_topic:=/a300_0000/sensors/imu_0/data \
+  base_frame:=base_link \
+  odom_frame:=odom \
+  imu_frame:=imu_0_link \
+  lidar_frame:=lidar3d_0_sensor_link \
+  deskew:=false \
+  publish_deskewed_scan:=true \
+  publish_local_map:=true \
+  rviz:=true
+```
+
+Note: the Clearpath sim currently publishes the 3D LiDAR correctly, but the simulated IMU is still being sorted out. For raw LiDAR testing, verify:
+
+```bash
+ros2 topic hz /a300_0000/sensors/lidar3d_0/points
+ros2 topic echo /a300_0000/sensors/lidar3d_0/points --once | head -40
+```
+
+### Record A Bag From Live Sim
+
+Recording a bag is separate from SLAM. RKO-LIO does not automatically create bags.
+
+```bash
+cd /mnt/c/Users/Username/OneDrive/Desktop/husky
+mkdir -p bags
+source /opt/ros/jazzy/setup.bash
+
+ros2 bag record \
+  /a300_0000/sensors/lidar3d_0/points \
+  /a300_0000/sensors/lidar3d_0/scan \
+  /a300_0000/sensors/lidar2d_0/scan \
+  /a300_0000/platform/odom \
+  /tf \
+  /tf_static \
+  /clock \
+  -o bags/husky_lidar_test
+```
+
+Drive for 30-60 seconds, press `Ctrl+C`, then inspect:
+
+```bash
+ros2 bag info bags/husky_lidar_test
+```
+
+### Transfer To Another Computer
+
+On another machine, install WSL 2 and Docker, clone/copy this repo, clone `lidarslam_ros2/` if it is not included, then run:
+
+```bash
+cd /mnt/c/Users/Username/OneDrive/Desktop/husky
+docker compose -f docker-compose.lidarslam.yml build
+docker compose -f docker-compose.lidarslam.yml run --rm lidarslam
+```
+
+If using live robot/sim topics, make sure `ROS_DOMAIN_ID`, middleware, and networking match the robot/sim.
