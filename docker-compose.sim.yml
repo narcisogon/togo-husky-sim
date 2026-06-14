@@ -1,0 +1,36 @@
+services:
+  sim:
+    build:
+      context: .
+      dockerfile: Dockerfile.sim
+    image: togo-clearpath-sim:jazzy
+    network_mode: host
+    privileged: true
+    stdin_open: true
+    tty: true
+    environment:
+      ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-0}
+      RMW_IMPLEMENTATION: ${RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}
+      RCUTILS_COLORIZED_OUTPUT: 1
+      DISPLAY: ${DISPLAY}
+      WAYLAND_DISPLAY: ${WAYLAND_DISPLAY}
+      XDG_RUNTIME_DIR: ${XDG_RUNTIME_DIR:-/mnt/wslg/runtime-dir}
+      PULSE_SERVER: ${PULSE_SERVER}
+      QT_X11_NO_MITSHM: 1
+      NVIDIA_DRIVER_CAPABILITIES: all
+      LD_LIBRARY_PATH: /usr/lib/wsl/lib
+      LIBGL_ALWAYS_SOFTWARE: 0
+      GALLIUM_DRIVER: d3d12
+    volumes:
+      - .:/husky:rw
+      - .:/mnt/c/Users/Username/OneDrive/Desktop/husky:rw
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - /mnt/wslg:/mnt/wslg:rw
+      - /usr/lib/wsl:/usr/lib/wsl:ro
+      - /dev:/dev
+      - /dev/dxg:/dev/dxg
+    devices:
+      - /dev/dri:/dev/dri
+    command: bash
+
+

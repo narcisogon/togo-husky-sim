@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """Simple WASD teleop for a Clearpath Husky/A300 sim.
 
 Publishes geometry_msgs/msg/TwistStamped to a Clearpath cmd_vel topic.
@@ -39,7 +39,7 @@ def clamp(value, low, high):
 
 def main():
     parser = argparse.ArgumentParser(description="WASD teleop for Clearpath cmd_vel")
-    parser.add_argument("--topic", default="/a300_0000/cmd_vel", help="TwistStamped topic to publish")
+    parser.add_argument("--topic", default="/a300_0000/platform/cmd_vel", help="TwistStamped topic to publish")
     parser.add_argument("--linear", type=float, default=0.25, help="Initial linear speed in m/s")
     parser.add_argument("--angular", type=float, default=0.6, help="Initial angular speed in rad/s")
     parser.add_argument("--rate", type=float, default=20.0, help="Publish rate while a key is held")

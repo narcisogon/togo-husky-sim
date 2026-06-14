@@ -1,49 +1,71 @@
+﻿from pathlib import Path
+
+from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch_ros.actions import Node
-from ament_index_python.packages import get_package_share_directory
-from pathlib import Path
 
 
 def generate_launch_description():
     pkg_share = Path(get_package_share_directory('togo_bringup'))
-    imu_bridge_config = str(pkg_share / 'config' / 'imu_bridge.yaml')
+    bridge_config = str(pkg_share / 'config' / 'seyond_bridge.yaml')
 
-    imu_bridge = Node(
+    seyond_bridge = Node(
         package='ros_gz_bridge',
         executable='parameter_bridge',
-        name='togo_imu_gz_bridge',
+        name='seyond_robin_w_gz_bridge',
         namespace='a300_0000/sensors',
         output='screen',
         parameters=[{
             'use_sim_time': True,
-            'config_file': imu_bridge_config,
+            'config_file': bridge_config,
         }],
     )
 
-    imu_tf = Node(
+    # Clearpath publishes the full robot TF under /a300_0000/tf_static. These
+    # global static transforms make external tools such as RKO-LIO robust even
+    # when they are launched outside the Clearpath namespace or inside Docker.
+    seyond_mount_tf = Node(
         package='tf2_ros',
         executable='static_transform_publisher',
-        name='togo_imu_static_tf',
+        name='seyond_robin_w_mount_static_tf',
         output='screen',
         arguments=[
-            '--x', '0.059', '--y', '0.0', '--z', '0.161275',
+            '--x', '0.30', '--y', '0.0', '--z', '0.42',
             '--roll', '0.0', '--pitch', '0.0', '--yaw', '0.0',
             '--frame-id', 'base_link',
-            '--child-frame-id', 'imu_0_link',
+            '--child-frame-id', 'seyond_robin_w_link',
         ],
     )
 
-    lidar_tf = Node(
+    seyond_lidar_tf = Node(
         package='tf2_ros',
         executable='static_transform_publisher',
-        name='togo_lidar3d_static_tf',
+        name='seyond_robin_w_lidar_static_tf',
         output='screen',
         arguments=[
-            '--x', '0.0', '--y', '0.0', '--z', '0.15',
+            '--x', '0.0', '--y', '0.0', '--z', '0.0',
             '--roll', '0.0', '--pitch', '0.0', '--yaw', '0.0',
-            '--frame-id', 'base_link',
-            '--child-frame-id', 'lidar3d_0_sensor_link',
+            '--frame-id', 'seyond_robin_w_link',
+            '--child-frame-id', 'seyond_robin_w_lidar_frame',
         ],
     )
 
-    return LaunchDescription([imu_bridge, imu_tf, lidar_tf])
+    seyond_imu_tf = Node(
+        package='tf2_ros',
+        executable='static_transform_publisher',
+        name='seyond_robin_w_imu_static_tf',
+        output='screen',
+        arguments=[
+            '--x', '0.0', '--y', '0.0', '--z', '0.0',
+            '--roll', '0.0', '--pitch', '0.0', '--yaw', '0.0',
+            '--frame-id', 'seyond_robin_w_link',
+            '--child-frame-id', 'seyond_robin_w_imu_frame',
+        ],
+    )
+
+    return LaunchDescription([
+        seyond_bridge,
+        seyond_mount_tf,
+        seyond_lidar_tf,
+        seyond_imu_tf,
+    ])

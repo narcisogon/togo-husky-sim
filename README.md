@@ -443,3 +443,101 @@ docker compose -f docker-compose.lidarslam.yml run --rm lidarslam
 ```
 
 If using live robot/sim topics, make sure `ROS_DOMAIN_ID`, middleware, and networking match the robot/sim.
+
+## Live SLAM Support Helper
+
+For RKO-LIO with the Clearpath sim, keep this helper running in a WSL terminal before launching SLAM:
+
+```bash
+cd /mnt/c/Users/Username/OneDrive/Desktop/husky
+bash start_slam_support.sh
+```
+
+It starts:
+
+```text
+Gazebo IMU -> ROS Imu bridge
+/a300_0000/tf -> /tf relay
+base_link -> imu_0_link static TF
+base_link -> lidar3d_0_sensor_link static TF
+```
+
+The WASD teleop script publishes to the Clearpath platform command topic:
+
+```bash
+python3 wasd_teleop.py
+```
+
+Default command topic:
+
+```text
+/a300_0000/platform/cmd_vel
+```
+
+## Seyond-Only Simulation Profile
+
+The active sim profile is intentionally simplified to:
+
+```text
+Clearpath A300/Husky rover
+Seyond Robin W-style GPU LiDAR, 120 deg x 70 deg FOV
+Co-located simulated IMU
+```
+
+Active sensor topics:
+
+```text
+/a300_0000/sensors/seyond_robin_w/scan/points
+/a300_0000/sensors/seyond_robin_w/imu
+/a300_0000/sensors/seyond_robin_w/scan
+```
+
+Active sensor frames:
+
+```text
+seyond_robin_w_link
+seyond_robin_w_lidar_frame
+seyond_robin_w_imu_frame
+```
+
+After editing `robot.yaml` or the custom URDF/launch files, regenerate Clearpath files:
+
+```bash
+cd /mnt/c/Users/Username/OneDrive/Desktop/husky
+source /opt/ros/jazzy/setup.bash
+ros2 run clearpath_generator_common generate_description -s /mnt/c/Users/Username/OneDrive/Desktop/husky
+ros2 run clearpath_generator_gz generate_launch -s /mnt/c/Users/Username/OneDrive/Desktop/husky
+ros2 run clearpath_generator_gz generate_param -s /mnt/c/Users/Username/OneDrive/Desktop/husky
+```
+
+Run order:
+
+```bash
+# Terminal 1: sim
+cd /mnt/c/Users/Username/OneDrive/Desktop/husky
+source /opt/ros/jazzy/setup.bash
+source source_togo_custom.sh
+ros2 launch clearpath_gz simulation.launch.py setup_path:=/mnt/c/Users/Username/OneDrive/Desktop/husky world:=construction rviz:=true
+
+# Terminal 2: TF support for Docker/RKO
+cd /mnt/c/Users/Username/OneDrive/Desktop/husky
+bash start_slam_support.sh
+
+# Terminal 3: SLAM Docker
+cd /mnt/c/Users/Username/OneDrive/Desktop/husky
+ROS_DOMAIN_ID=0 docker compose -f docker-compose.lidarslam.yml run --rm lidarslam
+
+# Inside Docker: RKO-LIO
+bash /scripts/run_rko_lio_seyond.sh
+
+# Optional, another Docker terminal: graph SLAM
+bash /scripts/run_graph_slam_seyond.sh
+```
+
+Quick validation:
+
+```bash
+timeout 6 ros2 topic hz /a300_0000/sensors/seyond_robin_w/scan/points
+timeout 6 ros2 topic hz /a300_0000/sensors/seyond_robin_w/imu
+timeout 5 ros2 run tf2_ros tf2_echo base_link seyond_robin_w_lidar_frame
+```

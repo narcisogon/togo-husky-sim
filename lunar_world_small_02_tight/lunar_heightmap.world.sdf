@@ -1,0 +1,60 @@
+<?xml version="1.0" ?>
+<sdf version="1.9">
+  <world name="lunar_heightmap_test">
+    <physics name="1ms" type="ignored">
+      <max_step_size>0.001</max_step_size>
+      <real_time_factor>1.0</real_time_factor>
+    </physics>
+
+    <plugin filename="gz-sim-physics-system" name="gz::sim::systems::Physics"/>
+    <plugin filename="gz-sim-user-commands-system" name="gz::sim::systems::UserCommands"/>
+    <plugin filename="gz-sim-scene-broadcaster-system" name="gz::sim::systems::SceneBroadcaster"/>
+    <plugin filename="gz-sim-sensors-system" name="gz::sim::systems::Sensors">
+      <render_engine>ogre2</render_engine>
+    </plugin>
+    <plugin filename="gz-sim-imu-system" name="gz::sim::systems::Imu"/>
+
+    <scene>
+      <ambient>0.55 0.55 0.55 1</ambient>
+      <background>0.02 0.02 0.025 1</background>
+      <shadows>true</shadows>
+    </scene>
+
+    <light type="directional" name="sun_low_angle">
+      <cast_shadows>true</cast_shadows>
+      <pose>0 0 30 0.4 0.25 0</pose>
+      <diffuse>0.9 0.88 0.82 1</diffuse>
+      <specular>0.15 0.15 0.15 1</specular>
+      <direction>-0.65 0.25 -0.72</direction>
+    </light>
+
+    <model name="lunar_terrain_patch">
+      <static>true</static>
+      <link name="terrain_link">
+        <collision name="terrain_collision">
+          <geometry>
+            <heightmap>
+              <uri>file:///mnt/c/Users/Username/OneDrive/Desktop/husky/lunar_world_small_02_tight/lunar_heightmap.png</uri>
+              <size>150 150 15</size>
+              <pos>0 0 0</pos>
+            </heightmap>
+          </geometry>
+        </collision>
+        <visual name="terrain_visual">
+          <geometry>
+            <heightmap>
+              <uri>file:///mnt/c/Users/Username/OneDrive/Desktop/husky/lunar_world_small_02_tight/lunar_heightmap.png</uri>
+              <size>150 150 15</size>
+              <pos>0 0 0</pos>
+            </heightmap>
+          </geometry>
+          <material>
+            <ambient>0.45 0.43 0.39 1</ambient>
+            <diffuse>0.62 0.60 0.55 1</diffuse>
+            <specular>0.03 0.03 0.03 1</specular>
+          </material>
+        </visual>
+      </link>
+    </model>
+  </world>
+</sdf>

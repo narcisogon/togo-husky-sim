@@ -1,0 +1,10 @@
+<PAMDataset>
+  <SRS dataAxisToSRSAxisMapping="1,2">PROJCS["SimpleCylindrical Moon",GEOGCS["GCS_Moon",DATUM["D_Moon",SPHEROID["Moon",1737400,0]],PRIMEM["Reference_Meridian",0],UNIT["degree",0.0174532925199433,AUTHORITY["EPSG","9122"]]],PROJECTION["Equirectangular"],PARAMETER["standard_parallel_1",0],PARAMETER["central_meridian",0],PARAMETER["false_easting",0],PARAMETER["false_northing",0],UNIT["metre",1,AUTHORITY["EPSG","9001"]],AXIS["Easting",EAST],AXIS["Northing",NORTH]]</SRS>
+  <GeoTransform>  2.2714084678175999e+06,  1.1821968976842105e+02,  0.0000000000000000e+00,  5.6666761107840016e+05,  0.0000000000000000e+00, -1.1821968976842105e+02</GeoTransform>
+  <Metadata>
+    <MDI key="AREA_OR_POINT">Area</MDI>
+  </Metadata>
+  <PAMRasterBand band="1">
+    <Scale>0.5</Scale>
+  </PAMRasterBand>
+</PAMDataset>

@@ -12,9 +12,22 @@ services:
       RMW_IMPLEMENTATION: ${RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}
       RCUTILS_COLORIZED_OUTPUT: 1
       DISPLAY: ${DISPLAY}
+      LD_LIBRARY_PATH: /usr/lib/wsl/lib:${LD_LIBRARY_PATH}
+      LIBGL_ALWAYS_SOFTWARE: "0"
+      MESA_D3D12_DEFAULT_ADAPTER_NAME: NVIDIA
+      GALLIUM_DRIVER: d3d12
+      MESA_LOADER_DRIVER_OVERRIDE: d3d12
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: all
+    devices:
+      - /dev/dxg:/dev/dxg
     volumes:
+      - ./lidarslam_ros2:/ws/src/lidarslam_ros2:rw
       - ./bags:/bags:rw
       - ./slam_output:/ws/src/lidarslam_ros2/output:rw
+      - ./scripts:/scripts:ro
       - /tmp/.X11-unix:/tmp/.X11-unix:ro
+      - /usr/lib/wsl:/usr/lib/wsl:ro
+      - /mnt/wslg:/mnt/wslg:rw
     command: bash
 

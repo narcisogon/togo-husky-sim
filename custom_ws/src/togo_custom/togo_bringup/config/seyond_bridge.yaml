@@ -1,0 +1,17 @@
+﻿- ros_topic_name: seyond_robin_w/imu
+  gz_topic_name: /a300_0000/sensors/seyond_robin_w/imu
+  ros_type_name: sensor_msgs/msg/Imu
+  gz_type_name: gz.msgs.IMU
+  direction: GZ_TO_ROS
+
+- ros_topic_name: seyond_robin_w/points
+  gz_topic_name: /a300_0000/sensors/seyond_robin_w/scan/points
+  ros_type_name: sensor_msgs/msg/PointCloud2
+  gz_type_name: gz.msgs.PointCloudPacked
+  direction: GZ_TO_ROS
+
+- ros_topic_name: seyond_robin_w/scan
+  gz_topic_name: /a300_0000/sensors/seyond_robin_w/scan
+  ros_type_name: sensor_msgs/msg/LaserScan
+  gz_type_name: gz.msgs.LaserScan
+  direction: GZ_TO_ROS
