@@ -1,4 +1,8 @@
-#!/usr/bin/env bash`nset -eo pipefail`n`nsource /opt/ros/jazzy/setup.bash`nset -u
+#!/usr/bin/env bash
+set -eo pipefail
+
+source /opt/ros/jazzy/setup.bash
+set -u
 
 OUT_NAME="${1:-seyond_slam_run}"
 mkdir -p /bags
@@ -13,9 +17,12 @@ ros2 bag record \
   /tf \
   /tf_static \
   /rko_lio/odometry \
+  /rko_lio/path \
   /rko_lio/frame \
+  /rko_lio/frame_xyzi \
   /rko_lio/local_map \
   /modified_map \
   /modified_path \
   /modified_map_array \
+  /reference/path \
   -o "/bags/${OUT_NAME}"

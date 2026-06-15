@@ -3,7 +3,6 @@ install/
 log/
 bags/
 slam_output/
-lidarslam_ros2/
 *.bak*
 *.bak-*
 *.pyc

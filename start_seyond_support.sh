@@ -39,6 +39,12 @@ start_node "Seyond LiDAR scan bridge" \
   ros2 run ros_gz_bridge parameter_bridge \
   '/a300_0000/sensors/seyond_robin_w/scan@sensor_msgs/msg/LaserScan[gz.msgs.LaserScan'
 
+
+start_node "Gazebo dynamic pose bridge" \
+  ros2 run ros_gz_bridge parameter_bridge \
+  '/world/enhanced_lunar_test/dynamic_pose/info@tf2_msgs/msg/TFMessage[gz.msgs.Pose_V' \
+  --ros-args \
+  -r /world/enhanced_lunar_test/dynamic_pose/info:=/gazebo/dynamic_pose
 start_node "TF relay" \
   ros2 run topic_tools relay /a300_0000/tf /tf --ros-args --log-level error
 
