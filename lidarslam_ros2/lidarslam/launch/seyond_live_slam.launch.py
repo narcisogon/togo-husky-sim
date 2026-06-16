@@ -1,4 +1,8 @@
-"""Integrated live Seyond RKO-LIO frontend + graph SLAM backend launch."""
+"""Integrated live Seyond RKO-LIO frontend + graph SLAM backend launch.
+
+All frontend and backend tuning parameters live in one YAML by default:
+  lidarslam/param/seyond_live_slam.yaml
+"""
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, ExecuteProcess
@@ -8,15 +12,8 @@ from launch_ros.actions import Node
 
 
 def generate_launch_description():
-    lidar_topic = LaunchConfiguration('lidar_topic')
-    imu_topic = LaunchConfiguration('imu_topic')
-    lidar_frame = LaunchConfiguration('lidar_frame')
-    imu_frame = LaunchConfiguration('imu_frame')
-    base_frame = LaunchConfiguration('base_frame')
-    odom_frame = LaunchConfiguration('odom_frame')
+    slam_param_file = LaunchConfiguration('slam_param_file')
     use_sim_time = LaunchConfiguration('use_sim_time')
-    save_dir = LaunchConfiguration('save_dir')
-    graph_param_file = LaunchConfiguration('graph_param_file')
     rviz = LaunchConfiguration('rviz')
     map_save_period = LaunchConfiguration('map_save_period')
 
@@ -26,28 +23,10 @@ def generate_launch_description():
         name='rko_lio_online_node',
         output='screen',
         emulate_tty=True,
-        parameters=[{
-            'mode': 'online',
-            'lidar_topic': lidar_topic,
-            'imu_topic': imu_topic,
-            'lidar_frame': lidar_frame,
-            'imu_frame': imu_frame,
-            'base_frame': base_frame,
-            'odom_frame': odom_frame,
-            'odom_topic': '/rko_lio/odometry',
-            'deskew': False,
-            'voxel_size': 0.20,
-            'double_downsample': False,
-            'max_correspondance_distance': 4.0,
-            'max_scan_delta_sec': 10.0,
-            'min_range': 0.2,
-            'max_range': 80.0,
-            'publish_deskewed_scan': True,
-            'deskewed_scan_topic': '/rko_lio/frame',
-            'publish_local_map': True,
-            'map_topic': '/rko_lio/local_map',
-            'use_sim_time': use_sim_time,
-        }],
+        parameters=[
+            slam_param_file,
+            {'use_sim_time': use_sim_time},
+        ],
     )
 
     xyzi_adapter = ExecuteProcess(
@@ -68,22 +47,14 @@ def generate_launch_description():
         output='screen',
         emulate_tty=True,
         parameters=[
-            graph_param_file,
-            {
-                'use_sim_time': use_sim_time,
-                'use_odom_input': True,
-                'global_frame_id': 'map',
-                'map_save_dir': save_dir,
-                'submap_distance_threshold': 0.8,
-                'debug_flag': True,
-            },
+            slam_param_file,
+            {'use_sim_time': use_sim_time},
         ],
         remappings=[
             ('odom_input', '/rko_lio/odometry'),
             ('cloud_input', '/rko_lio/frame_xyzi'),
         ],
     )
-
 
     frontend_path = ExecuteProcess(
         cmd=[
@@ -115,6 +86,7 @@ def generate_launch_description():
         ],
         output='screen',
     )
+
     map_to_odom_tf = Node(
         package='tf2_ros',
         executable='static_transform_publisher',
@@ -150,15 +122,12 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
-        DeclareLaunchArgument('lidar_topic', default_value='/a300_0000/sensors/seyond_robin_w/scan/points'),
-        DeclareLaunchArgument('imu_topic', default_value='/a300_0000/sensors/seyond_robin_w/imu'),
-        DeclareLaunchArgument('lidar_frame', default_value='seyond_robin_w_lidar_frame'),
-        DeclareLaunchArgument('imu_frame', default_value='seyond_robin_w_imu_frame'),
-        DeclareLaunchArgument('base_frame', default_value='base_link'),
-        DeclareLaunchArgument('odom_frame', default_value='odom'),
+        DeclareLaunchArgument(
+            'slam_param_file',
+            default_value='/ws/src/lidarslam_ros2/lidarslam/param/seyond_live_slam.yaml',
+            description='Single YAML containing both RKO-LIO frontend and graph SLAM backend parameters.',
+        ),
         DeclareLaunchArgument('use_sim_time', default_value='true'),
-        DeclareLaunchArgument('save_dir', default_value='/ws/src/lidarslam_ros2/output/husky_seyond_graph'),
-        DeclareLaunchArgument('graph_param_file', default_value='/ws/src/lidarslam_ros2/lidarslam/param/lidarslam_mid360_rko_graph.yaml'),
         DeclareLaunchArgument('map_save_period', default_value='10'),
         DeclareLaunchArgument('rviz', default_value='true'),
         rko_node,
