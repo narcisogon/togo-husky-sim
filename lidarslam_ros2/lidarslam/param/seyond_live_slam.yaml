@@ -1,28 +1,89 @@
 rko_lio_online_node:
   ros__parameters:
-    use_sim_time: true
-    mode: online
-    lidar_topic: /a300_0000/sensors/seyond_robin_w/scan/points
-    imu_topic: /a300_0000/sensors/seyond_robin_w/imu
-    lidar_frame: seyond_robin_w_lidar_frame
-    imu_frame: seyond_robin_w_imu_frame
-    base_frame: base_link
-    odom_frame: odom
-    odom_topic: /rko_lio/odometry
-    deskew: false
-    voxel_size: 0.15
-    double_downsample: false
-    max_correspondance_distance: 3.0
-    max_scan_delta_sec: 5.0
-    min_range: 0.2
-    max_range: 80.0
-    publish_deskewed_scan: true
-    deskewed_scan_topic: /rko_lio/frame
-    publish_local_map: true
-    map_topic: /rko_lio/local_map
-    trans_for_mapupdate: 0.2
-    use_imu: true
-    registration_method: "GICP"
+    # ROS wiring.
+    use_sim_time: true                         # Use Gazebo /clock.
+    lidar_topic: /a300_0000/sensors/seyond_robin_w/scan/points  # Input PointCloud2.
+    imu_topic: /a300_0000/sensors/seyond_robin_w/imu             # Input Imu; RKO-LIO always subscribes to this topic.
+    lidar_frame: seyond_robin_w_lidar_frame    # LiDAR frame override; empty means use message frame.
+    imu_frame: seyond_robin_w_imu_frame        # IMU frame override; empty means use message frame.
+    base_frame: base_link                      # Body frame used as odometry child frame.
+    odom_frame: odom                           # Odometry parent/world frame.
+    odom_topic: /rko_lio/odometry              # Raw RKO-LIO odometry output.
+    invert_odom_tf: false                      # Publish base->odom instead of odom->base when true; keep false for normal odom TF.
+    max_lidar_buffer_size: 3                   # Max queued LiDAR frames waiting for registration; keep small for live latency.
+    drop_oldest_lidar_when_full: true          # Keep newest scans when overloaded; better for live navigation latency.
+
+    # Published frontend products.
+    publish_deskewed_scan: true                # Publish the processed/deskewed frame used by the backend.
+    deskewed_scan_topic: /rko_lio/frame        # Processed frame topic.
+    publish_local_map: false                   # Publish RKO-LIO's local sparse map; false avoids frontend/map mutex stalls live.
+    map_topic: /rko_lio/local_map              # Local map topic.
+    publish_map_after: 1.0                     # Seconds between local map publish attempts.
+    publish_lidar_acceleration: false          # Publish estimated LiDAR/body acceleration.
+    publish_registration_diagnostics: true     # Publish overlap, residual, Hessian, and failure metrics.
+    registration_diagnostics_topic: /rko_lio/registration_diagnostics  # Diagnostics consumed by the stabilizer.
+    publish_runtime_diagnostics: true          # Publish live timing/backlog metrics for finding real-time bottlenecks.
+    runtime_diagnostics_topic: /rko_lio/runtime_diagnostics  # Float32MultiArray: [process_sec, scan_age_before_sec, scan_age_after_sec, queued_lidar, raw_points, deskewed_points, dropped_lidar, success].
+
+    # Scan preprocessing.
+    deskew: false                              # Deskew each scan with IMU/motion prediction; enable only when point timing is trustworthy.
+    voxel_size: 0.25                           # Main voxel size for downsampling and local map resolution; larger is faster/stabler live.
+    double_downsample: false                   # KISS-ICP style two-stage downsample; false keeps one downsample path.
+    min_range: 0.2                             # Drop LiDAR points closer than this range in meters.
+    max_range: 80.0                            # Drop LiDAR points farther than this range in meters.
+    max_points_per_voxel: 20                   # Max points stored per local-map voxel.
+
+    # ICP frontend registration. RKO-LIO does not use NDT/GICP registration_method.
+    max_iterations: 20                         # Fine ICP iteration cap.
+    convergence_criterion: 0.00001             # Stop fine ICP when update norm is below this.
+    max_correspondance_distance: 1.5           # Fine ICP nearest-neighbor acceptance distance in meters.
+    registration_error_model: point_to_plane   # point_to_point is the stable baseline; point_to_plane is experimental.
+    max_voxel_search_radius: 2                 # Cap search cube radius; prevents large correspondence distances from exploding CPU.
+    plane_fit_neighbors: 5                     # Nearest local-map neighbors used to fit each plane.
+    plane_fit_min_neighbors: 4                 # Minimum neighbors required for a valid plane.
+    plane_fit_max_distance: 0.6                # Max neighbor radius for plane fitting in meters.
+    plane_fit_max_eigenvalue: 0.08             # Reject rough/non-planar neighborhoods above this covariance eigenvalue.
+    point_to_plane_keypoint_stride: 2          # Use every Nth keypoint for plane residuals to keep live runtime down.
+    max_num_threads: 5                         # Data-association threads; 0 lets RKO/TBB choose.
+    min_beta: 200.0                            # IMU gravity/orientation regularization weight; <=0 disables that term.
+    max_expected_jerk: 3.0                     # Motion sanity value used by acceleration filtering.
+
+    # Coarse-to-fine ICP seed added for lunar stability.
+    coarse_to_fine_registration: false         # Run a coarse ICP pass before fine ICP; enable for offline sweeps, costly live.
+    coarse_voxel_size: 0.45                    # Coarse pass voxel size in meters.
+    coarse_max_correspondance_distance: 4.0    # Coarse pass correspondence distance in meters.
+    coarse_max_iterations: 15                  # Coarse ICP iteration cap.
+
+    # Timing and recovery behavior.
+    max_scan_delta_sec: 10.0                   # Drop and advance through scans whose timestamp gap exceeds this many seconds.
+    initialization_phase: false                # If true, use initial IMU samples to initialize static orientation/bias.
+    enable_kidnap_relocalization: false        # Try global relocalization against the unpruned map after failures.
+    reset_on_registration_failure: false       # Start a fresh local map if registration/relocalization fails.
+    recovery_min_failures: 1                   # Consecutive failures before recovery logic can run.
+    relocalize_after_scan_gap: false           # Try relocalization after dropped/gapped scans.
+    relocalization_min_correspondences: 30     # Min ICP correspondences for a relocalization candidate.
+    relocalization_min_inlier_ratio: 0.10      # Min inlier ratio for a relocalization candidate.
+    relocalization_max_mean_error: 1.5         # Max mean NN error for a relocalization candidate.
+    relocalization_max_correspondance_distance: 2.0  # Relocalization-only ICP correspondence distance.
+    relocalization_yaw_samples: 24             # Number of coarse yaw hypotheses for relocalization.
+    relocalization_pose_stride: 10             # Historical pose stride when searching relocalization candidates.
+    relocalization_min_pose_separation: 50     # Skip this many recent historical poses during relocalization.
+    relocalization_max_iterations: 15          # ICP iterations per relocalization hypothesis.
+
+    # LiDAR timestamp field interpretation.
+    lts_multiplier_to_seconds: 1.0             # Scale PointCloud2 per-point time values into seconds.
+    lts_force_absolute: false                  # Force per-point timestamps to be interpreted as absolute.
+    lts_force_relative: false                  # Force per-point timestamps to be interpreted as relative to header stamp.
+
+    # Optional static extrinsic overrides: [qx, qy, qz, qw, x, y, z].
+    # Leave empty to use TF for sensor-to-base transforms.
+    # extrinsic_imu2base_quat_xyzw_xyz: [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0]    # IMU-to-base transform override.
+    # extrinsic_lidar2base_quat_xyzw_xyz: [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0]  # LiDAR-to-base transform override.
+
+    # Optional trajectory dump on shutdown.
+    dump_results: false                        # Write RKO-LIO trajectory/config on shutdown.
+    results_dir: results                       # Dump directory when dump_results is true.
+    run_name: rko_lio_run                      # Dump run-name prefix.
 
 graph_based_slam:
   ros__parameters:

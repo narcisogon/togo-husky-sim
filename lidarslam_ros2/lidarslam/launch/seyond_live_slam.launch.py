@@ -16,6 +16,8 @@ def generate_launch_description():
     use_sim_time = LaunchConfiguration('use_sim_time')
     rviz = LaunchConfiguration('rviz')
     map_save_period = LaunchConfiguration('map_save_period')
+    enable_frontend_stability_filter = LaunchConfiguration('enable_frontend_stability_filter')
+    backend_odom_topic = LaunchConfiguration('backend_odom_topic')
 
     rko_node = Node(
         package='rko_lio',
@@ -51,9 +53,38 @@ def generate_launch_description():
             {'use_sim_time': use_sim_time},
         ],
         remappings=[
-            ('odom_input', '/rko_lio/odometry'),
+            ('odom_input', backend_odom_topic),
             ('cloud_input', '/rko_lio/frame_xyzi'),
         ],
+    )
+
+    frontend_stability_filter = Node(
+        package='rko_lio',
+        executable='frontend_stability_filter_node',
+        name='frontend_stability_filter',
+        output='screen',
+        emulate_tty=True,
+        parameters=[
+            {
+                'use_sim_time': use_sim_time,
+                'odom_topic': '/rko_lio/odometry',
+                'diagnostics_topic': '/rko_lio/registration_diagnostics',
+                'stable_odom_topic': '/rko_lio/odometry_stable',
+                'stable_path_topic': '/rko_lio/path_stable',
+                'status_topic': '/rko_lio/stability_status',
+                'fixed_frame': 'odom',
+                'max_linear_velocity': 1.5,
+                'max_yaw_rate_deg': 70.0,
+                'min_overlap_ratio': 0.12,
+                'max_mean_error_m': 1.5,
+                'max_hessian_condition': 100000.0,
+                'prediction_decay': 0.25,
+                'max_prediction_frames': 2,
+                'stationary_linear_velocity': 0.05,
+                'stationary_yaw_rate_deg': 3.0,
+            },
+        ],
+        condition=IfCondition(enable_frontend_stability_filter),
     )
 
     frontend_path = ExecuteProcess(
@@ -128,10 +159,21 @@ def generate_launch_description():
             description='Single YAML containing both RKO-LIO frontend and graph SLAM backend parameters.',
         ),
         DeclareLaunchArgument('use_sim_time', default_value='true'),
-        DeclareLaunchArgument('map_save_period', default_value='10'),
+        DeclareLaunchArgument('map_save_period', default_value='60'),
+        DeclareLaunchArgument(
+            'enable_frontend_stability_filter',
+            default_value='true',
+            description='Publish /rko_lio/odometry_stable with motion-prior gating and confidence-aware smoothing.',
+        ),
+        DeclareLaunchArgument(
+            'backend_odom_topic',
+            default_value='/rko_lio/odometry_stable',
+            description='Odometry topic consumed by graph_based_slam.',
+        ),
         DeclareLaunchArgument('rviz', default_value='true'),
         rko_node,
         xyzi_adapter,
+        frontend_stability_filter,
         graph_node,
         frontend_path,
         reference_path,

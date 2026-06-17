@@ -42,6 +42,7 @@
 #include <rclcpp/node_options.hpp>
 #include <sensor_msgs/msg/imu.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
+#include <std_msgs/msg/float32_multi_array.hpp>
 #include <tf2_ros/buffer.h>
 #include <tf2_ros/transform_broadcaster.h>
 #include <tf2_ros/transform_listener.h>
@@ -62,6 +63,8 @@ public:
   std::string odom_topic = "rko_lio/odometry";
   std::string map_topic = "rko_lio/local_map";
   std::string deskewed_scan_topic = "rko_lio/frame";
+  std::string registration_diagnostics_topic = "rko_lio/registration_diagnostics";
+  std::string runtime_diagnostics_topic = "rko_lio/runtime_diagnostics";
 
   bool dump_results = false;
   std::string results_dir = "results";
@@ -71,6 +74,8 @@ public:
   bool publish_lidar_acceleration = false;
   bool publish_deskewed_scan = false;
   bool publish_local_map = false;
+  bool publish_registration_diagnostics = true;
+  bool publish_runtime_diagnostics = true;
 
   Sophus::SE3d extrinsic_imu2base;
   Sophus::SE3d extrinsic_lidar2base;
@@ -84,6 +89,8 @@ public:
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr frame_publisher;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr map_publisher;
   rclcpp::Publisher<geometry_msgs::msg::AccelStamped>::SharedPtr lidar_accel_publisher;
+  rclcpp::Publisher<std_msgs::msg::Float32MultiArray>::SharedPtr registration_diagnostics_publisher;
+  rclcpp::Publisher<std_msgs::msg::Float32MultiArray>::SharedPtr runtime_diagnostics_publisher;
 
   // multithreading
   std::jthread map_publish_thead;
@@ -99,6 +106,8 @@ public:
   std::queue<core::ImuControl> imu_buffer;
   std::queue<core::LidarFrame> lidar_buffer;
   size_t max_lidar_buffer_size = 50;
+  bool drop_oldest_lidar_when_full = true;
+  size_t dropped_lidar_frames = 0;
 
   Node() = delete;
   Node(const std::string& node_name, const rclcpp::NodeOptions& options);
@@ -109,6 +118,15 @@ public:
   void lidar_callback(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& lidar_msg);
   void registration_loop();
   void publish_odometry(const core::State& state, const core::Secondsd& stamp) const;
+  void publish_registration_metrics(const core::LIO::RegistrationDiagnostics& diagnostics) const;
+  void publish_runtime_metrics(double processing_time_sec,
+                               double scan_age_before_sec,
+                               double scan_age_after_sec,
+                               size_t queued_lidar_frames,
+                               size_t raw_points,
+                               size_t deskewed_points,
+                               size_t dropped_frames,
+                               bool success) const;
   void publish_lidar_accel(const Eigen::Vector3d& acceleration, const core::Secondsd& stamp) const;
   void publish_map_loop();
   void dump_results_to_disk(const std::filesystem::path& results_dir, const std::string& run_name) const;

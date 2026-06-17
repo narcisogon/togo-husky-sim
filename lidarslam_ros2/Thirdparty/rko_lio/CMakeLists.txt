@@ -69,7 +69,7 @@ else()
     online_node)
 
   install(
-    TARGETS online_node_component offline_node
+    TARGETS online_node_component offline_node frontend_stability_filter_node
     EXPORT rko_lioTargets
     RUNTIME DESTINATION lib/${PROJECT_NAME})
 

@@ -27,6 +27,7 @@
 #include "rko_lio/core/profiler.hpp"
 #include "rko_lio/ros/utils/utils.hpp"
 // other
+#include <chrono>
 #include <fstream>
 #include <iostream>
 #include <nlohmann/json.hpp>
@@ -57,6 +58,17 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(LIO::Config,
                                    min_range,
                                    convergence_criterion,
                                    max_correspondance_distance,
+                                   registration_error_model,
+                                   max_voxel_search_radius,
+                                   plane_fit_neighbors,
+                                   plane_fit_min_neighbors,
+                                   plane_fit_max_distance,
+                                   plane_fit_max_eigenvalue,
+                                   point_to_plane_keypoint_stride,
+                                   coarse_to_fine_registration,
+                                   coarse_voxel_size,
+                                   coarse_max_correspondance_distance,
+                                   coarse_max_iterations,
                                    max_num_threads,
                                    initialization_phase,
                                    max_expected_jerk,
@@ -88,6 +100,11 @@ Node::Node(const std::string& node_name, const rclcpp::NodeOptions& options) {
   lidar_frame = node->declare_parameter<std::string>("lidar_frame", lidar_frame);
   odom_frame = node->declare_parameter<std::string>("odom_frame", odom_frame);
   odom_topic = node->declare_parameter<std::string>("odom_topic", odom_topic);
+  const int configured_lidar_buffer_size =
+      node->declare_parameter<int>("max_lidar_buffer_size", static_cast<int>(max_lidar_buffer_size));
+  max_lidar_buffer_size = static_cast<size_t>(configured_lidar_buffer_size < 1 ? 1 : configured_lidar_buffer_size);
+  drop_oldest_lidar_when_full =
+      node->declare_parameter<bool>("drop_oldest_lidar_when_full", drop_oldest_lidar_when_full);
 
   // tf
   invert_odom_tf = node->declare_parameter<bool>("invert_odom_tf", invert_odom_tf);
@@ -98,6 +115,22 @@ Node::Node(const std::string& node_name, const rclcpp::NodeOptions& options) {
   // publishing
   const rclcpp::QoS publisher_qos((rclcpp::SystemDefaultsQoS().keep_last(1).durability_volatile()));
   odom_publisher = node->create_publisher<nav_msgs::msg::Odometry>(odom_topic, publisher_qos);
+  publish_registration_diagnostics =
+      node->declare_parameter<bool>("publish_registration_diagnostics", publish_registration_diagnostics);
+  if (publish_registration_diagnostics) {
+    registration_diagnostics_topic =
+        node->declare_parameter<std::string>("registration_diagnostics_topic", registration_diagnostics_topic);
+    registration_diagnostics_publisher =
+        node->create_publisher<std_msgs::msg::Float32MultiArray>(registration_diagnostics_topic, publisher_qos);
+  }
+  publish_runtime_diagnostics =
+      node->declare_parameter<bool>("publish_runtime_diagnostics", publish_runtime_diagnostics);
+  if (publish_runtime_diagnostics) {
+    runtime_diagnostics_topic =
+        node->declare_parameter<std::string>("runtime_diagnostics_topic", runtime_diagnostics_topic);
+    runtime_diagnostics_publisher =
+        node->create_publisher<std_msgs::msg::Float32MultiArray>(runtime_diagnostics_topic, publisher_qos);
+  }
 
   publish_lidar_acceleration = node->declare_parameter<bool>("publish_lidar_acceleration", publish_lidar_acceleration);
   if (publish_lidar_acceleration) {
@@ -133,6 +166,37 @@ Node::Node(const std::string& node_name, const rclcpp::NodeOptions& options) {
       node->declare_parameter<double>("convergence_criterion", lio_config.convergence_criterion);
   lio_config.max_correspondance_distance =
       node->declare_parameter<double>("max_correspondance_distance", lio_config.max_correspondance_distance);
+  lio_config.registration_error_model =
+      node->declare_parameter<std::string>("registration_error_model", lio_config.registration_error_model);
+  if (lio_config.registration_error_model != "point_to_point" &&
+      lio_config.registration_error_model != "point_to_plane") {
+    RCLCPP_WARN_STREAM(node->get_logger(),
+                       "Unknown registration_error_model '" << lio_config.registration_error_model
+                                                           << "'. Falling back to point_to_point.");
+    lio_config.registration_error_model = "point_to_point";
+  }
+  lio_config.max_voxel_search_radius =
+      node->declare_parameter<int>("max_voxel_search_radius", lio_config.max_voxel_search_radius);
+  lio_config.plane_fit_neighbors =
+      node->declare_parameter<int>("plane_fit_neighbors", lio_config.plane_fit_neighbors);
+  lio_config.plane_fit_min_neighbors =
+      node->declare_parameter<int>("plane_fit_min_neighbors", lio_config.plane_fit_min_neighbors);
+  lio_config.plane_fit_max_distance =
+      node->declare_parameter<double>("plane_fit_max_distance", lio_config.plane_fit_max_distance);
+  lio_config.plane_fit_max_eigenvalue =
+      node->declare_parameter<double>("plane_fit_max_eigenvalue", lio_config.plane_fit_max_eigenvalue);
+  lio_config.point_to_plane_keypoint_stride =
+      node->declare_parameter<int>("point_to_plane_keypoint_stride", lio_config.point_to_plane_keypoint_stride);
+  if (lio_config.point_to_plane_keypoint_stride < 1) {
+    lio_config.point_to_plane_keypoint_stride = 1;
+  }
+  lio_config.coarse_to_fine_registration =
+      node->declare_parameter<bool>("coarse_to_fine_registration", lio_config.coarse_to_fine_registration);
+  lio_config.coarse_voxel_size = node->declare_parameter<double>("coarse_voxel_size", lio_config.coarse_voxel_size);
+  lio_config.coarse_max_correspondance_distance = node->declare_parameter<double>(
+      "coarse_max_correspondance_distance", lio_config.coarse_max_correspondance_distance);
+  lio_config.coarse_max_iterations = static_cast<size_t>(
+      node->declare_parameter<int>("coarse_max_iterations", static_cast<int>(lio_config.coarse_max_iterations)));
   lio_config.max_num_threads =
       static_cast<int>(node->declare_parameter<int>("max_num_threads", lio_config.max_num_threads));
   lio_config.initialization_phase =
@@ -294,9 +358,20 @@ void Node::lidar_callback(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& l
   {
     std::lock_guard lock(buffer_mutex);
     if (lidar_buffer.size() >= max_lidar_buffer_size) {
-      RCLCPP_WARN_STREAM(node->get_logger(), "Registration lidar buffer limit reached. Dropping frame.");
-      sync_condition_variable.notify_one();
-      return;
+      if (drop_oldest_lidar_when_full) {
+        lidar_buffer.pop();
+        ++dropped_lidar_frames;
+        RCLCPP_WARN_STREAM_THROTTLE(
+            node->get_logger(), *node->get_clock(), 1000,
+            "Registration lidar buffer limit reached. Dropping oldest queued frame to keep frontend fresh.");
+      } else {
+        RCLCPP_WARN_STREAM_THROTTLE(
+            node->get_logger(), *node->get_clock(), 1000,
+            "Registration lidar buffer limit reached. Dropping newest frame.");
+        ++dropped_lidar_frames;
+        sync_condition_variable.notify_one();
+        return;
+      }
     }
   }
   try {
@@ -340,6 +415,8 @@ void Node::registration_loop() {
     }
     core::LidarFrame frame = std::move(lidar_buffer.front());
     lidar_buffer.pop();
+    const size_t queued_lidar_frames = lidar_buffer.size();
+    const size_t dropped_frames = dropped_lidar_frames;
     atomic_registration_active = true;
     const auto& [timestamps, scan] = frame;
     const auto& [start_stamp, end_stamp, time_vector] = timestamps;
@@ -352,6 +429,10 @@ void Node::registration_loop() {
         !imu_buffer.empty() && !lidar_buffer.empty() && imu_buffer.back().time > lidar_buffer.front().timestamps.max;
     buffer_lock.unlock(); // we dont touch the buffers anymore
 
+    const double scan_age_before_sec = node->now().seconds() - end_stamp.count();
+    const auto processing_start = std::chrono::steady_clock::now();
+    size_t deskewed_points = 0;
+    bool registration_success = false;
     try {
       const core::Vector3dVector deskewed_frame = std::invoke([&]() {
         if (publish_local_map) {
@@ -361,8 +442,10 @@ void Node::registration_loop() {
           return lio->register_scan(extrinsic_lidar2base, scan, time_vector);
         }
       });
+      deskewed_points = deskewed_frame.size();
 
       if (!deskewed_frame.empty()) {
+        registration_success = true;
         // TODO: first frame is skipped and an empty frame is returned. improve how we handle this
         if (publish_deskewed_scan) {
           std_msgs::msg::Header header;
@@ -371,6 +454,9 @@ void Node::registration_loop() {
           frame_publisher->publish(utils::eigen_to_point_cloud2(deskewed_frame, header));
         }
         publish_odometry(lio->lidar_state, end_stamp);
+        if (publish_registration_diagnostics) {
+          publish_registration_metrics(lio->last_registration_diagnostics);
+        }
         if (publish_lidar_acceleration) {
           publish_lidar_accel(lio->lidar_state.linear_acceleration, end_stamp);
         }
@@ -380,6 +466,27 @@ void Node::registration_loop() {
       // (Number of correspondences=0). Both are recoverable on kidnap-style bags.
       RCLCPP_ERROR_STREAM(node->get_logger(), "Encountered error, dropping frame. Error: " << ex.what());
     }
+    const double processing_time_sec =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - processing_start).count();
+    const double scan_age_after_sec = node->now().seconds() - end_stamp.count();
+    publish_runtime_metrics(processing_time_sec,
+                            scan_age_before_sec,
+                            scan_age_after_sec,
+                            queued_lidar_frames,
+                            scan.size(),
+                            deskewed_points,
+                            dropped_frames,
+                            registration_success);
+    RCLCPP_INFO_STREAM_THROTTLE(node->get_logger(),
+                                *node->get_clock(),
+                                1000,
+                                "RKO runtime: process=" << processing_time_sec << "s, scan_age_before="
+                                                        << scan_age_before_sec << "s, scan_age_after="
+                                                        << scan_age_after_sec << "s, queued_lidar="
+                                                        << queued_lidar_frames << ", raw_points=" << scan.size()
+                                                        << ", deskewed_points=" << deskewed_points
+                                                        << ", dropped_lidar=" << dropped_frames
+                                                        << ", success=" << registration_success);
     atomic_registration_active = false;
   }
   atomic_registration_active = false;
@@ -412,6 +519,51 @@ void Node::publish_odometry(const core::State& state, const core::Secondsd& stam
   utils::eigen_vector3d_to_ros_xyz(state.velocity, odom_msg.twist.twist.linear);
   utils::eigen_vector3d_to_ros_xyz(state.angular_velocity, odom_msg.twist.twist.angular);
   odom_publisher->publish(odom_msg);
+}
+
+void Node::publish_registration_metrics(const core::LIO::RegistrationDiagnostics& diagnostics) const {
+  if (!registration_diagnostics_publisher) {
+    return;
+  }
+  std_msgs::msg::Float32MultiArray msg;
+  msg.data = {
+      diagnostics.valid ? 1.0f : 0.0f,
+      static_cast<float>(diagnostics.keypoints),
+      static_cast<float>(diagnostics.correspondences),
+      static_cast<float>(diagnostics.inlier_ratio),
+      static_cast<float>(diagnostics.mean_error),
+      static_cast<float>(diagnostics.hessian_min_eigenvalue),
+      static_cast<float>(diagnostics.hessian_max_eigenvalue),
+      static_cast<float>(diagnostics.hessian_condition),
+      static_cast<float>(diagnostics.consecutive_registration_failures),
+      diagnostics.coarse_to_fine_used ? 1.0f : 0.0f,
+  };
+  registration_diagnostics_publisher->publish(msg);
+}
+
+void Node::publish_runtime_metrics(double processing_time_sec,
+                                   double scan_age_before_sec,
+                                   double scan_age_after_sec,
+                                   size_t queued_lidar_frames,
+                                   size_t raw_points,
+                                   size_t deskewed_points,
+                                   size_t dropped_frames,
+                                   bool success) const {
+  if (!runtime_diagnostics_publisher) {
+    return;
+  }
+  std_msgs::msg::Float32MultiArray msg;
+  msg.data = {
+      static_cast<float>(processing_time_sec),
+      static_cast<float>(scan_age_before_sec),
+      static_cast<float>(scan_age_after_sec),
+      static_cast<float>(queued_lidar_frames),
+      static_cast<float>(raw_points),
+      static_cast<float>(deskewed_points),
+      static_cast<float>(dropped_frames),
+      success ? 1.0f : 0.0f,
+  };
+  runtime_diagnostics_publisher->publish(msg);
 }
 
 void Node::publish_lidar_accel(const Eigen::Vector3d& acceleration, const core::Secondsd& stamp) const {

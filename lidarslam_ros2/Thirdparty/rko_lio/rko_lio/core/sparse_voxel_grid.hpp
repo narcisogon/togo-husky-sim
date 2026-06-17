@@ -25,6 +25,8 @@
 #include <Eigen/Core>
 #include <bonxai/bonxai.hpp>
 #include <sophus/se3.hpp>
+#include <tuple>
+#include <vector>
 
 namespace rko_lio::core {
 
@@ -43,6 +45,10 @@ struct SparseVoxelGrid {
   std::vector<Eigen::Vector3d> Pointcloud() const;
   std::tuple<Eigen::Vector3d, double> GetClosestNeighbor(const Eigen::Vector3d& query) const;
   std::tuple<Eigen::Vector3d, double> GetClosestNeighbor(const Eigen::Vector3d& query, int voxel_search_radius) const;
+  std::vector<Eigen::Vector3d> GetNearestNeighbors(const Eigen::Vector3d& query,
+                                                   int voxel_search_radius,
+                                                   double max_distance,
+                                                   int max_neighbors) const;
 
   double voxel_size_;
   double clipping_distance_;

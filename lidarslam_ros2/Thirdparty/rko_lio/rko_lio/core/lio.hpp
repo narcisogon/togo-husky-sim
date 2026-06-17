@@ -38,6 +38,20 @@ namespace rko_lio::core {
 /** Core LiDAR-inertial odometry algorithm class. */
 class LIO {
 public:
+  /** Per-scan registration quality metrics for ROS diagnostics and gating. */
+  struct RegistrationDiagnostics {
+    bool valid = false;
+    int keypoints = 0;
+    int correspondences = 0;
+    double inlier_ratio = 0.0;
+    double mean_error = 0.0;
+    double hessian_min_eigenvalue = 0.0;
+    double hessian_max_eigenvalue = 0.0;
+    double hessian_condition = 0.0;
+    int consecutive_registration_failures = 0;
+    bool coarse_to_fine_used = false;
+  };
+
   /** Configuration parameters for odometry. */
   struct Config {
     /** Enable scan deskewing. */
@@ -63,6 +77,39 @@ public:
 
     /** Max distance for correspondences (m). */
     double max_correspondance_distance = 0.5;
+
+    /** Registration residual model: "point_to_point" or "point_to_plane". */
+    std::string registration_error_model = "point_to_point";
+
+    /** Cap voxel neighborhood search to avoid large correspondence cubes. */
+    int max_voxel_search_radius = 3;
+
+    /** Number of local map neighbors used for point-to-plane fitting. */
+    int plane_fit_neighbors = 8;
+
+    /** Minimum local map neighbors required to fit a plane. */
+    int plane_fit_min_neighbors = 5;
+
+    /** Maximum point-to-plane neighbor search distance. */
+    double plane_fit_max_distance = 1.0;
+
+    /** Maximum accepted smallest plane covariance eigenvalue. */
+    double plane_fit_max_eigenvalue = 0.05;
+
+    /** Use only every Nth keypoint for point-to-plane residuals. */
+    int point_to_plane_keypoint_stride = 1;
+
+    /** Seed fine ICP with a coarse, more forgiving ICP pass. */
+    bool coarse_to_fine_registration = false;
+
+    /** Coarse ICP voxel size for keypoints (m). */
+    double coarse_voxel_size = 1.0;
+
+    /** Coarse ICP correspondence distance (m). */
+    double coarse_max_correspondance_distance = 2.0;
+
+    /** Maximum iterations for the coarse ICP seed. */
+    size_t coarse_max_iterations = 20;
 
     /** Thread count for data association (0 = automatic). */
     int max_num_threads = 0;
@@ -145,6 +192,9 @@ public:
 
   /** IMU measurement statistics since last LiDAR frame. */
   IntervalStats interval_stats;
+
+  /** Quality metrics from the latest registration attempt. */
+  RegistrationDiagnostics last_registration_diagnostics;
 
   explicit LIO(const Config& config_)
       : config(config_),

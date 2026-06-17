@@ -62,6 +62,17 @@ add_executable(offline_node offline_node.cpp)
 target_link_libraries(offline_node PRIVATE rko_lio::ros)
 set_target_properties(offline_node PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
+# executable: frontend_stability_filter_node
+add_executable(frontend_stability_filter_node frontend_stability_filter_node.cpp)
+target_link_libraries(
+  frontend_stability_filter_node
+  PRIVATE
+    ${geometry_msgs_TARGETS}
+    ${nav_msgs_TARGETS}
+    ${std_msgs_TARGETS}
+    rclcpp::rclcpp)
+set_target_properties(frontend_stability_filter_node PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
 # component: online_node_component
 add_library(online_node_component SHARED online_node.cpp)
 target_link_libraries(

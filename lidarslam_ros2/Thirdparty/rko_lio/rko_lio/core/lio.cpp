@@ -26,6 +26,7 @@
 #include "preprocess_scan.hpp"
 #include "profiler.hpp"
 #include "util.hpp"
+#include "voxel_down_sample.hpp"
 // other
 #include <sophus/se3.hpp>
 // tbb
@@ -37,6 +38,7 @@
 // stl
 #include <algorithm>
 #include <cmath>
+#include <Eigen/Eigenvalues>
 #include <functional>
 #include <iostream>
 #include <limits>
@@ -53,10 +55,53 @@ inline void transform_points(const Sophus::SE3d& T, Vector3dVector& points) {
 }
 
 using LinearSystem = std::tuple<Eigen::Matrix6d, Eigen::Vector6d, double>;
+
+struct PlaneFit {
+  bool valid = false;
+  Eigen::Vector3d centroid = Eigen::Vector3d::Zero();
+  Eigen::Vector3d normal = Eigen::Vector3d::UnitZ();
+  double smallest_eigenvalue = std::numeric_limits<double>::max();
+};
+
+PlaneFit fit_local_plane(const Vector3dVector& neighbors, const double max_smallest_eigenvalue) {
+  if (neighbors.size() < 3) {
+    return {};
+  }
+  Eigen::Vector3d centroid = Eigen::Vector3d::Zero();
+  for (const Eigen::Vector3d& point : neighbors) {
+    centroid += point;
+  }
+  centroid /= static_cast<double>(neighbors.size());
+
+  Eigen::Matrix3d covariance = Eigen::Matrix3d::Zero();
+  for (const Eigen::Vector3d& point : neighbors) {
+    const Eigen::Vector3d centered = point - centroid;
+    covariance += centered * centered.transpose();
+  }
+  covariance /= static_cast<double>(neighbors.size());
+
+  Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> solver(covariance);
+  if (solver.info() != Eigen::Success) {
+    return {};
+  }
+  const Eigen::Vector3d eigenvalues = solver.eigenvalues();
+  const double smallest = eigenvalues.x();
+  if (smallest > max_smallest_eigenvalue) {
+    return {};
+  }
+  Eigen::Vector3d normal = solver.eigenvectors().col(0).normalized();
+  return PlaneFit{
+      .valid = true,
+      .centroid = centroid,
+      .normal = normal,
+      .smallest_eigenvalue = smallest,
+  };
+}
+
 LinearSystem build_icp_linear_system(const Sophus::SE3d& current_pose,
                                      const rko_lio::core::Vector3dVector& frame,
                                      const rko_lio::core::SparseVoxelGrid& voxel_map,
-                                     const double& max_correspondance_distance,
+                                     const LIO::Config& config,
                                      const int voxel_search_radius = 1) {
   auto linear_system_reduce = [](LinearSystem lhs, const LinearSystem& rhs) {
     auto& [lhs_H, lhs_b, lhs_chi] = lhs;
@@ -77,9 +122,21 @@ LinearSystem build_icp_linear_system(const Sophus::SE3d& current_pose,
                         residual.squaredNorm());    // chi
   };
 
+  auto linear_system_for_one_plane = [](const Eigen::Vector3d& source, const PlaneFit& plane) {
+    const Eigen::RowVector3d n_t = plane.normal.transpose();
+    Eigen::Matrix<double, 1, 6> J_r;
+    J_r.block<1, 3>(0, 0) = n_t;
+    J_r.block<1, 3>(0, 3) = n_t * (-1.0 * Sophus::SO3d::hat(source).matrix());
+    const double residual = plane.normal.dot(source - plane.centroid);
+    return LinearSystem(J_r.transpose() * J_r,      // JTJ
+                        J_r.transpose() * residual, // JTr
+                        residual * residual);       // chi
+  };
+
   // The only parallel part
   using points_iterator = std::vector<Eigen::Vector3d>::const_iterator;
   std::atomic<int> correspondances_counter = 0;
+  const int point_to_plane_stride = std::max(1, config.point_to_plane_keypoint_stride);
   const auto& [H_icp, b_icp, chi_icp] = tbb::parallel_reduce(
       // Range
       tbb::blocked_range<points_iterator>{frame.cbegin(), frame.cend()},
@@ -90,10 +147,33 @@ LinearSystem build_icp_linear_system(const Sophus::SE3d& current_pose,
         return std::transform_reduce(r.begin(), r.end(), J, linear_system_reduce, [&](const auto& point) {
           // Compute data association and linear system
           const Eigen::Vector3d transformed_point = current_pose * point;
-          const auto& [closest_neighbor, distance] = voxel_map.GetClosestNeighbor(transformed_point, voxel_search_radius);
-          if (distance < max_correspondance_distance) {
-            correspondances_counter++;
-            return linear_system_for_one_point(transformed_point, closest_neighbor);
+          if (config.registration_error_model == "point_to_plane") {
+            const auto point_index = static_cast<std::ptrdiff_t>(&point - frame.data());
+            if (point_to_plane_stride > 1 && (point_index % point_to_plane_stride) != 0) {
+              return LinearSystem(Eigen::Matrix6d::Zero(), Eigen::Vector6d::Zero(), 0.0);
+            }
+            const Vector3dVector neighbors = voxel_map.GetNearestNeighbors(
+                transformed_point,
+                voxel_search_radius,
+                config.plane_fit_max_distance,
+                config.plane_fit_neighbors);
+            if (neighbors.size() >= static_cast<size_t>(config.plane_fit_min_neighbors)) {
+              PlaneFit plane = fit_local_plane(neighbors, config.plane_fit_max_eigenvalue);
+              if (plane.valid) {
+                if (plane.normal.dot(transformed_point - plane.centroid) < 0.0) {
+                  plane.normal *= -1.0;
+                }
+                correspondances_counter++;
+                return linear_system_for_one_plane(transformed_point, plane);
+              }
+            }
+          } else {
+            const auto& [closest_neighbor, distance] =
+                voxel_map.GetClosestNeighbor(transformed_point, voxel_search_radius);
+            if (distance < config.max_correspondance_distance) {
+              correspondances_counter++;
+              return linear_system_for_one_point(transformed_point, closest_neighbor);
+            }
           }
           // TODO (meher): additional 0 add flops, which may hurt single threaded perf slightly
           return LinearSystem(Eigen::Matrix6d::Zero(), Eigen::Vector6d::Zero(), 0.0);
@@ -139,7 +219,7 @@ Sophus::SE3d icp(const Vector3dVector& frame,
     const auto& [H, b, chi] = std::invoke([&]() -> LinearSystem {
       const auto& [H_icp, b_icp, chi_icp] =
           build_icp_linear_system(
-              current_pose, frame, voxel_map, config.max_correspondance_distance, voxel_search_radius);
+              current_pose, frame, voxel_map, config, voxel_search_radius);
       if (beta >= 0) {
         const auto& [H_ori, b_ori, chi_ori] =
             build_orientation_linear_system(current_pose, optional_accel_info->local_gravity_estimate);
@@ -196,9 +276,12 @@ AlignmentStats evaluate_alignment(const Sophus::SE3d& pose,
   };
 }
 
-int voxel_search_radius_for_distance(const SparseVoxelGrid& voxel_map, const double max_correspondance_distance) {
+int voxel_search_radius_for_distance(const SparseVoxelGrid& voxel_map,
+                                     const double max_correspondance_distance,
+                                     const int max_voxel_search_radius) {
   const double voxel_size = std::max(1e-6, voxel_map.voxel_size_);
-  return std::max(1, static_cast<int>(std::ceil(max_correspondance_distance / voxel_size)) + 1);
+  const int radius = std::max(1, static_cast<int>(std::ceil(max_correspondance_distance / voxel_size)) + 1);
+  return max_voxel_search_radius > 0 ? std::min(radius, max_voxel_search_radius) : radius;
 }
 
 Sophus::SO3d yaw_rotation(const double yaw_rad) {
@@ -348,7 +431,9 @@ std::optional<Sophus::SE3d> LIO::try_global_relocalization(const Vector3dVector&
   const int pose_stride = std::max(1, config.relocalization_pose_stride);
   const int yaw_samples = std::max(1, config.relocalization_yaw_samples);
   const int voxel_search_radius =
-      voxel_search_radius_for_distance(relocalization_map, relocalization_config.max_correspondance_distance);
+      voxel_search_radius_for_distance(relocalization_map,
+                                       relocalization_config.max_correspondance_distance,
+                                       relocalization_config.max_voxel_search_radius);
   const double pi = std::acos(-1.0);
 
   bool found = false;
@@ -512,9 +597,10 @@ Vector3dVector LIO::register_scan(const Vector3dVector& scan, const TimestampVec
 
   if (std::chrono::abs(current_lidar_time - lidar_state.time).count() > config.max_scan_delta_sec) {
     const double diff_seconds = (current_lidar_time - lidar_state.time).count();
-    // TODO: std::expected with tl::expected (because ros humble)
-    throw std::invalid_argument("Received LiDAR scan with " + std::to_string(diff_seconds) +
-                                " seconds delta to previous scan.");
+    return drop_failed_scan(
+        current_lidar_time,
+        "Received LiDAR scan with " + std::to_string(diff_seconds) +
+            " seconds delta to previous scan.");
   }
 
   const auto& [avg_body_accel, avg_ang_vel] = std::invoke([&]() -> std::pair<Eigen::Vector3d, Eigen::Vector3d> {
@@ -551,6 +637,9 @@ Vector3dVector LIO::register_scan(const Vector3dVector& scan, const TimestampVec
   const auto& accel_filter_info = get_accel_info(initial_guess.so3(), current_lidar_time);
 
   const auto& preproc_result = preprocess_scan(scan, timestamps, current_lidar_time, relative_pose_at_time, config);
+  last_registration_diagnostics = {};
+  last_registration_diagnostics.keypoints = static_cast<int>(preproc_result.keypoints.size());
+  last_registration_diagnostics.consecutive_registration_failures = _consecutive_registration_failures;
 
   if (preproc_result.keypoints.size() < 10) {
     const std::string error_msg =
@@ -581,8 +670,23 @@ Vector3dVector LIO::register_scan(const Vector3dVector& scan, const TimestampVec
     SCOPED_PROFILER("ICP");
     Sophus::SE3d optimized_pose;
     try {
-      optimized_pose = icp(preproc_result.keypoints, map, initial_guess, config, accel_filter_info);
+      Sophus::SE3d fine_initial_guess = initial_guess;
+      if (config.coarse_to_fine_registration) {
+        const Vector3dVector coarse_keypoints =
+            voxel_down_sample(preproc_result.keypoints, std::max(config.coarse_voxel_size, config.voxel_size));
+        if (coarse_keypoints.size() >= 10) {
+          LIO::Config coarse_config = config;
+          coarse_config.max_iterations = std::max<size_t>(1, config.coarse_max_iterations);
+          coarse_config.max_correspondance_distance =
+              std::max(config.max_correspondance_distance, config.coarse_max_correspondance_distance);
+          fine_initial_guess = icp(coarse_keypoints, map, initial_guess, coarse_config, accel_filter_info);
+          last_registration_diagnostics.coarse_to_fine_used = true;
+        }
+      }
+      optimized_pose = icp(preproc_result.keypoints, map, fine_initial_guess, config, accel_filter_info);
     } catch (const std::exception&) {
+      last_registration_diagnostics.consecutive_registration_failures =
+          _consecutive_registration_failures + 1;
       ++_consecutive_registration_failures;
       if (_consecutive_registration_failures < std::max(1, config.recovery_min_failures)) {
         throw;
@@ -602,6 +706,35 @@ Vector3dVector LIO::register_scan(const Vector3dVector& scan, const TimestampVec
                                  "local reset");
       }
       throw;
+    }
+
+    const int voxel_search_radius =
+        voxel_search_radius_for_distance(map, config.max_correspondance_distance, config.max_voxel_search_radius);
+    const AlignmentStats stats = evaluate_alignment(
+        optimized_pose, preproc_result.keypoints, map, config.max_correspondance_distance, voxel_search_radius);
+    last_registration_diagnostics.valid = stats.correspondences > 0;
+    last_registration_diagnostics.correspondences = stats.correspondences;
+    last_registration_diagnostics.inlier_ratio = stats.inlier_ratio;
+    last_registration_diagnostics.mean_error =
+        std::isfinite(stats.mean_error) ? stats.mean_error : 0.0;
+
+    try {
+      const auto& [H, b, chi] = build_icp_linear_system(
+          optimized_pose, preproc_result.keypoints, map, config, voxel_search_radius);
+      (void)b;
+      (void)chi;
+      Eigen::SelfAdjointEigenSolver<Eigen::Matrix6d> solver(H);
+      if (solver.info() == Eigen::Success) {
+        const Eigen::Vector6d eigenvalues = solver.eigenvalues();
+        const double min_eigen = eigenvalues.minCoeff();
+        const double max_eigen = eigenvalues.maxCoeff();
+        last_registration_diagnostics.hessian_min_eigenvalue = min_eigen;
+        last_registration_diagnostics.hessian_max_eigenvalue = max_eigen;
+        last_registration_diagnostics.hessian_condition =
+            min_eigen > 1e-9 ? max_eigen / min_eigen : std::numeric_limits<double>::infinity();
+      }
+    } catch (const std::exception&) {
+      last_registration_diagnostics.hessian_condition = std::numeric_limits<double>::infinity();
     }
 
     // estimate velocities and accelerations from the new pose
@@ -630,6 +763,7 @@ Vector3dVector LIO::register_scan(const Vector3dVector& scan, const TimestampVec
 
   poses_with_timestamps.emplace_back(lidar_state.time, lidar_state.pose);
   _consecutive_registration_failures = 0;
+  last_registration_diagnostics.consecutive_registration_failures = 0;
 
   return preproc_result.filtered_frame;
 }
