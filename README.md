@@ -9,6 +9,110 @@ The goal is not just to make a robot appear in simulation. The goal is to build 
 - Can we feed that frontend into a graph backend for submaps, loop closure, map export, and later navigation?
 - What is reliable now, what is experimental, and what should be improved before using this as a serious testbed?
 
+## Active Files Quick Reference
+
+This is the current live setup. If you forget everything else, start here.
+
+```text
+Main run script:
+  scripts/run_live_seyond_slam_integrated.sh
+
+Main integrated launch:
+  lidarslam_ros2/lidarslam/launch/seyond_live_slam.launch.py
+
+Main unified SLAM YAML:
+  lidarslam_ros2/lidarslam/param/seyond_live_slam.yaml
+
+Sensor bridge / TF support:
+  start_seyond_support.sh
+
+Robot and simulated Seyond sensor description:
+  custom_ws/src/togo_custom/togo_description/urdf/togo_description.urdf.xacro
+  robot.yaml
+
+Driving helper:
+  wasd_teleop.py
+
+Bag recording:
+  scripts/record_seyond_slam_bag.sh
+
+Map saving:
+  scripts/save_seyond_map_clean.sh
+
+Sim health checks:
+  scripts/check_seyond_sim.sh
+```
+
+### What To Edit
+
+Edit this one file for almost all SLAM tuning:
+
+```text
+lidarslam_ros2/lidarslam/param/seyond_live_slam.yaml
+```
+
+It contains two ROS node parameter sections:
+
+```yaml
+rko_lio_online_node:
+  ros__parameters:
+    # Frontend LiDAR-inertial odometry params
+
+graph_based_slam:
+  ros__parameters:
+    # Backend pose-graph, loop-closure, and map params
+```
+
+Frontend edits go under `rko_lio_online_node`. This controls RKO-LIO settings like `use_imu`, `deskew`, `voxel_size`, `max_correspondance_distance`, sensor topics, and frame names.
+
+Backend edits go under `graph_based_slam`. This controls graph SLAM settings like `registration_method`, `ndt_resolution`, `submap_distance_threshold`, `distance_loop_closure`, Scan Context, BEV, triangle descriptors, dynamic filtering, and map saving.
+
+The integrated launch file should usually not need tuning changes anymore. It mainly wires nodes together, remaps backend inputs, starts RViz, publishes the frontend path, runs the XYZI adapter, and periodically calls `/map_save`.
+
+### Current Data Flow Summary
+
+```text
+Gazebo simulated rover
+  -> Seyond gpu_lidar + IMU
+  -> start_seyond_support.sh bridges Gazebo topics into ROS
+  -> rko_lio_online_node frontend estimates /rko_lio/odometry
+  -> add_intensity_to_cloud.py creates /rko_lio/frame_xyzi
+  -> graph_based_slam backend consumes /rko_lio/odometry + /rko_lio/frame_xyzi
+  -> backend publishes /modified_path, /modified_map, /modified_map_array
+  -> RViz displays raw LiDAR, frontend path/map, backend path/map
+```
+
+### Script Summary
+
+```text
+start_seyond_support.sh
+  Starts Gazebo-to-ROS bridges for the Seyond IMU, LiDAR scan, LiDAR point cloud, dynamic pose experiment, TF relay, and static Seyond sensor TFs. Keep this terminal open while sim is running.
+
+scripts/run_live_seyond_slam_integrated.sh
+  Main Docker-side SLAM launcher. Loads seyond_live_slam.launch.py and passes the unified seyond_live_slam.yaml file.
+
+scripts/add_intensity_to_cloud.py
+  Converts /rko_lio/frame into /rko_lio/frame_xyzi by adding an intensity field required by graph_based_slam.
+
+scripts/odom_to_path.py
+  Converts /rko_lio/odometry into /rko_lio/path so the frontend trajectory is easy to see in RViz.
+
+scripts/gazebo_pose_to_aligned_path.py
+  Experimental reference-path helper from Gazebo dynamic pose. Do not treat this as trusted ground truth yet.
+
+scripts/record_seyond_slam_bag.sh
+  Records raw sim topics, frontend outputs, and backend outputs into /bags for repeatable replay/testing.
+
+scripts/save_seyond_map_clean.sh
+  Calls the graph SLAM /map_save service and lists recent saved map artifacts.
+
+scripts/check_seyond_sim.sh
+  Quick health check for topics, rates, headers, TFs, and RKO-LIO output rates.
+
+wasd_teleop.py
+  W/S/A/D driving helper for the Clearpath rover command topic.
+```
+
 ## Current Status
 
 Working:
@@ -52,7 +156,7 @@ husky/
     graph_based_slam/
     lidarslam/
       launch/seyond_live_slam.launch.py
-      param/lidarslam_mid360_rko_graph.yaml
+      param/seyond_live_slam.yaml
 
   scripts/
     run_live_seyond_slam_integrated.sh
@@ -79,9 +183,9 @@ husky/
 
 Notes:
 
-- `lidarslam_ros2/` is currently ignored by `.gitignore`, because it is an external cloned repo. If you change files inside it and want those changes tracked in this repo, either force-add them intentionally or copy important local launch/config files into a tracked folder.
+- `lidarslam_ros2/` is now intentionally vendored into this repository so local SLAM changes can be checkpointed and pushed. See `lidarslam_ros2/VENDORED_UPSTREAM.md` for upstream commit provenance.
 - `bags/`, `slam_output/`, `build/`, `install/`, and `log/` should stay out of Git.
-- The root `README.md`, `scripts/`, `custom_ws/`, terrain generator scripts, `robot.yaml`, and Docker files are the main things worth preserving.
+- The root `README.md`, `scripts/`, `custom_ws/`, `lidarslam_ros2/`, terrain generator scripts, `robot.yaml`, and Docker files are the main things worth preserving.
 
 ## System Architecture
 
@@ -291,11 +395,13 @@ Seeing `searching Loop` means the backend is alive and building submaps. It does
 
 ## Current Graph SLAM Parameters
 
-The main parameter file is:
+The main live parameter file is now one unified frontend/backend YAML:
 
 ```text
-lidarslam_ros2/lidarslam/param/lidarslam_mid360_rko_graph.yaml
+lidarslam_ros2/lidarslam/param/seyond_live_slam.yaml
 ```
+
+That YAML is the main edit point for both the frontend and backend. It has a `rko_lio_online_node` section for the RKO-LIO frontend and a `graph_based_slam` section for the backend.
 
 Current important values:
 
@@ -318,7 +424,7 @@ use_dynamic_object_filter: false
 use_save_map_in_loop: true
 ```
 
-The integrated launch overrides some backend parameters:
+The unified YAML also contains the live backend overrides that used to live in the integrated launch:
 
 ```text
 use_odom_input: true
@@ -402,6 +508,19 @@ Inside the Docker shell:
 
 ```bash
 bash /scripts/run_live_seyond_slam_integrated.sh
+```
+
+The run script uses this YAML by default:
+
+```text
+/ws/src/lidarslam_ros2/lidarslam/param/seyond_live_slam.yaml
+```
+
+To test a different YAML without editing the script:
+
+```bash
+SLAM_PARAM_FILE=/ws/src/lidarslam_ros2/lidarslam/param/my_test.yaml \
+  bash /scripts/run_live_seyond_slam_integrated.sh
 ```
 
 That launch starts:
@@ -1193,6 +1312,7 @@ Do commit:
 README.md
 scripts/
 custom_ws/
+lidarslam_ros2/
 robot.yaml
 Dockerfile.lidarslam
 docker-compose.lidarslam.yml

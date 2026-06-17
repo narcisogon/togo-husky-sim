@@ -73,6 +73,19 @@ target_link_libraries(
     rclcpp::rclcpp)
 set_target_properties(frontend_stability_filter_node PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
+# executable: imu_prediction_node
+add_executable(imu_prediction_node imu_prediction_node.cpp)
+target_link_libraries(
+  imu_prediction_node
+  PRIVATE
+    Eigen3::Eigen
+    ${geometry_msgs_TARGETS}
+    ${nav_msgs_TARGETS}
+    ${sensor_msgs_TARGETS}
+    rclcpp::rclcpp
+    tf2::tf2)
+set_target_properties(imu_prediction_node PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
 # component: online_node_component
 add_library(online_node_component SHARED online_node.cpp)
 target_link_libraries(

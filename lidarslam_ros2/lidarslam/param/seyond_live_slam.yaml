@@ -54,6 +54,22 @@ rko_lio_online_node:
     coarse_max_correspondance_distance: 4.0    # Coarse pass correspondence distance in meters.
     coarse_max_iterations: 15                  # Coarse ICP iteration cap.
 
+    # FAST-LIO-inspired stabilization without replacing RKO's whole frontend.
+    gravity_magnitude: 9.8107                   # Gravity magnitude used by IMU compensation/regularization; Gazebo sim is Earth gravity.
+    enable_imu_pose_prior: true                # Add the IMU-propagated scan pose as a soft prior inside ICP iterations.
+    imu_pose_prior_translation_weight: 0.00    # Low translation pull; LiDAR still owns position when geometry is good.
+    imu_pose_prior_rotation_weight: 0.50        # Stronger rotation pull from gyro/IMU to reduce yaw/attitude jitter.
+    enable_degeneracy_damping: false          # Reduce ICP update size when Hessian condition indicates weak geometry.
+    degeneracy_damping_condition: 1500.0       # Apply damping above this Hessian condition number.
+    degeneracy_damping_alpha: 0.35             # Keep this fraction of the scan update under degeneracy damping.
+    enable_stationary_hold: false              # Hold pose when IMU and LiDAR both indicate the rover is parked.
+    stationary_angular_velocity_threshold: 0.015  # rad/s threshold for parked gyro.
+    stationary_linear_acceleration_threshold: 0.08  # m/s^2 threshold after gravity compensation.
+    stationary_max_translation_delta: 0.006    # Max scan-to-scan translation still considered parked.
+    stationary_max_rotation_delta: 0.004       # Max scan-to-scan rotation still considered parked.
+    enable_vertical_spike_filter: true          # Clamp sudden one-frame Z jumps from weak vertical scan constraints.
+    max_vertical_update_m: 0.08                 # Max allowed scan-to-scan Z update; raise for rough terrain, lower for flat testing.
+
     # Timing and recovery behavior.
     max_scan_delta_sec: 10.0                   # Drop and advance through scans whose timestamp gap exceeds this many seconds.
     initialization_phase: false                # If true, use initial IMU samples to initialize static orientation/bias.

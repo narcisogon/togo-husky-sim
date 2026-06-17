@@ -69,9 +69,23 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(LIO::Config,
                                    coarse_voxel_size,
                                    coarse_max_correspondance_distance,
                                    coarse_max_iterations,
+                                   enable_imu_pose_prior,
+                                   imu_pose_prior_translation_weight,
+                                   imu_pose_prior_rotation_weight,
+                                   enable_degeneracy_damping,
+                                   degeneracy_damping_condition,
+                                   degeneracy_damping_alpha,
+                                   enable_stationary_hold,
+                                   stationary_angular_velocity_threshold,
+                                   stationary_linear_acceleration_threshold,
+                                   stationary_max_translation_delta,
+                                   stationary_max_rotation_delta,
+                                   enable_vertical_spike_filter,
+                                   max_vertical_update_m,
                                    max_num_threads,
                                    initialization_phase,
                                    max_expected_jerk,
+                                   gravity_magnitude,
                                    double_downsample,
                                    min_beta,
                                    max_scan_delta_sec,
@@ -197,11 +211,40 @@ Node::Node(const std::string& node_name, const rclcpp::NodeOptions& options) {
       "coarse_max_correspondance_distance", lio_config.coarse_max_correspondance_distance);
   lio_config.coarse_max_iterations = static_cast<size_t>(
       node->declare_parameter<int>("coarse_max_iterations", static_cast<int>(lio_config.coarse_max_iterations)));
+  lio_config.enable_imu_pose_prior =
+      node->declare_parameter<bool>("enable_imu_pose_prior", lio_config.enable_imu_pose_prior);
+  lio_config.imu_pose_prior_translation_weight =
+      node->declare_parameter<double>("imu_pose_prior_translation_weight", lio_config.imu_pose_prior_translation_weight);
+  lio_config.imu_pose_prior_rotation_weight =
+      node->declare_parameter<double>("imu_pose_prior_rotation_weight", lio_config.imu_pose_prior_rotation_weight);
+  lio_config.enable_degeneracy_damping =
+      node->declare_parameter<bool>("enable_degeneracy_damping", lio_config.enable_degeneracy_damping);
+  lio_config.degeneracy_damping_condition =
+      node->declare_parameter<double>("degeneracy_damping_condition", lio_config.degeneracy_damping_condition);
+  lio_config.degeneracy_damping_alpha =
+      node->declare_parameter<double>("degeneracy_damping_alpha", lio_config.degeneracy_damping_alpha);
+  lio_config.enable_stationary_hold =
+      node->declare_parameter<bool>("enable_stationary_hold", lio_config.enable_stationary_hold);
+  lio_config.stationary_angular_velocity_threshold =
+      node->declare_parameter<double>("stationary_angular_velocity_threshold",
+                                      lio_config.stationary_angular_velocity_threshold);
+  lio_config.stationary_linear_acceleration_threshold =
+      node->declare_parameter<double>("stationary_linear_acceleration_threshold",
+                                      lio_config.stationary_linear_acceleration_threshold);
+  lio_config.stationary_max_translation_delta =
+      node->declare_parameter<double>("stationary_max_translation_delta", lio_config.stationary_max_translation_delta);
+  lio_config.stationary_max_rotation_delta =
+      node->declare_parameter<double>("stationary_max_rotation_delta", lio_config.stationary_max_rotation_delta);
+  lio_config.enable_vertical_spike_filter =
+      node->declare_parameter<bool>("enable_vertical_spike_filter", lio_config.enable_vertical_spike_filter);
+  lio_config.max_vertical_update_m =
+      node->declare_parameter<double>("max_vertical_update_m", lio_config.max_vertical_update_m);
   lio_config.max_num_threads =
       static_cast<int>(node->declare_parameter<int>("max_num_threads", lio_config.max_num_threads));
   lio_config.initialization_phase =
       node->declare_parameter<bool>("initialization_phase", lio_config.initialization_phase);
   lio_config.max_expected_jerk = node->declare_parameter<double>("max_expected_jerk", lio_config.max_expected_jerk);
+  lio_config.gravity_magnitude = node->declare_parameter<double>("gravity_magnitude", lio_config.gravity_magnitude);
   lio_config.double_downsample = node->declare_parameter<bool>("double_downsample", lio_config.double_downsample);
   lio_config.min_beta = node->declare_parameter<double>("min_beta", lio_config.min_beta);
   lio_config.max_scan_delta_sec =

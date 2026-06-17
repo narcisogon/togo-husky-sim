@@ -6,6 +6,7 @@ set -u
 
 export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}"
 export RMW_IMPLEMENTATION="${RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}"
+RELAY_SIM_TF_TO_ROS_TF="${RELAY_SIM_TF_TO_ROS_TF:-false}"
 
 pids=()
 cleanup() {
@@ -45,8 +46,12 @@ start_node "Gazebo dynamic pose bridge" \
   '/world/enhanced_lunar_test/dynamic_pose/info@tf2_msgs/msg/TFMessage[gz.msgs.Pose_V' \
   --ros-args \
   -r /world/enhanced_lunar_test/dynamic_pose/info:=/gazebo/dynamic_pose
-start_node "TF relay" \
-  ros2 run topic_tools relay /a300_0000/tf /tf --ros-args --log-level error
+if [[ "${RELAY_SIM_TF_TO_ROS_TF}" == "true" ]]; then
+  start_node "TF relay" \
+    ros2 run topic_tools relay /a300_0000/tf /tf --ros-args --log-level error
+else
+  echo "Skipping sim TF relay (/a300_0000/tf -> /tf); SLAM owns odom->base_link."
+fi
 
 start_node "Seyond mount static TF" \
   ros2 run tf2_ros static_transform_publisher 0.30 0.0 0.42 0.0 0.0 0.0 base_link seyond_robin_w_link

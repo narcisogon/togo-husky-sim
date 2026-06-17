@@ -54,6 +54,10 @@ inline void transform_points(const Sophus::SE3d& T, Vector3dVector& points) {
   std::transform(points.begin(), points.end(), points.begin(), [&](const auto& point) { return T * point; });
 }
 
+inline Eigen::Vector3d gravity_vector(const double magnitude) {
+  return {0.0, 0.0, -std::max(0.0, magnitude)};
+}
+
 using LinearSystem = std::tuple<Eigen::Matrix6d, Eigen::Vector6d, double>;
 
 struct PlaneFit {
@@ -190,16 +194,29 @@ LinearSystem build_icp_linear_system(const Sophus::SE3d& current_pose,
 }
 
 LinearSystem build_orientation_linear_system(const Sophus::SE3d& current_pose,
-                                             const Eigen::Vector3d& local_gravity_estimate) {
+                                             const Eigen::Vector3d& local_gravity_estimate,
+                                             const Eigen::Vector3d& gravity) {
   const Sophus::SO3d& current_rotation = current_pose.so3();
   const Eigen::Vector3d predicted_gravity =
-      current_rotation.inverse() * (-1 * gravity()); // points upwards, same as local_gravity_estimate
+      current_rotation.inverse() * (-1 * gravity); // points upwards, same as local_gravity_estimate
   const Eigen::Vector3d residual = predicted_gravity - local_gravity_estimate;
 
   Eigen::Matrix3_6d J_ori = Eigen::Matrix3_6d::Zero();
-  J_ori.block<3, 3>(0, 3) = current_rotation.inverse().matrix() * Sophus::SO3d::hat(-1 * gravity()).matrix();
+  J_ori.block<3, 3>(0, 3) = current_rotation.inverse().matrix() * Sophus::SO3d::hat(-1 * gravity).matrix();
 
   return LinearSystem{J_ori.transpose() * J_ori, J_ori.transpose() * residual, 0.5 * residual.squaredNorm()};
+}
+
+LinearSystem build_pose_prior_linear_system(const Sophus::SE3d& current_pose,
+                                            const Sophus::SE3d& prior_pose,
+                                            const double translation_weight,
+                                            const double rotation_weight) {
+  Eigen::Vector6d residual = (current_pose * prior_pose.inverse()).log();
+  Eigen::Matrix6d H = Eigen::Matrix6d::Zero();
+  H.topLeftCorner<3, 3>().diagonal().setConstant(std::max(0.0, translation_weight));
+  H.bottomRightCorner<3, 3>().diagonal().setConstant(std::max(0.0, rotation_weight));
+  const double chi = 0.5 * (residual.transpose() * H * residual)(0, 0);
+  return LinearSystem{H, H * residual, chi};
 }
 
 Sophus::SE3d icp(const Vector3dVector& frame,
@@ -207,6 +224,7 @@ Sophus::SE3d icp(const Vector3dVector& frame,
                  const Sophus::SE3d& initial_guess,
                  const LIO::Config& config,
                  const std::optional<AccelInfo>& optional_accel_info,
+                 const std::optional<Sophus::SE3d>& optional_pose_prior = std::nullopt,
                  const int voxel_search_radius = 1) {
   // in case config disables it, or we don't have valid IMU information for this icp loop, beta is -1
   const double beta = (config.min_beta > 0 && optional_accel_info.has_value())
@@ -222,8 +240,32 @@ Sophus::SE3d icp(const Vector3dVector& frame,
               current_pose, frame, voxel_map, config, voxel_search_radius);
       if (beta >= 0) {
         const auto& [H_ori, b_ori, chi_ori] =
-            build_orientation_linear_system(current_pose, optional_accel_info->local_gravity_estimate);
-        return {H_icp + H_ori / beta, b_icp + b_ori / beta, chi_icp + chi_ori / beta};
+            build_orientation_linear_system(
+                current_pose,
+                optional_accel_info->local_gravity_estimate,
+                gravity_vector(config.gravity_magnitude));
+        Eigen::Matrix6d H = H_icp + H_ori / beta;
+        Eigen::Vector6d b = b_icp + b_ori / beta;
+        double chi = chi_icp + chi_ori / beta;
+        if (config.enable_imu_pose_prior && optional_pose_prior.has_value()) {
+          const auto& [H_prior, b_prior, chi_prior] =
+              build_pose_prior_linear_system(current_pose,
+                                             optional_pose_prior.value(),
+                                             config.imu_pose_prior_translation_weight,
+                                             config.imu_pose_prior_rotation_weight);
+          H += H_prior;
+          b += b_prior;
+          chi += chi_prior;
+        }
+        return {H, b, chi};
+      }
+      if (config.enable_imu_pose_prior && optional_pose_prior.has_value()) {
+        const auto& [H_prior, b_prior, chi_prior] =
+            build_pose_prior_linear_system(current_pose,
+                                           optional_pose_prior.value(),
+                                           config.imu_pose_prior_translation_weight,
+                                           config.imu_pose_prior_rotation_weight);
+        return {H_icp + H_prior, b_icp + b_prior, chi_icp + chi_prior};
       }
       return {H_icp, b_icp, chi_icp};
     });
@@ -294,6 +336,10 @@ inline Sophus::SO3d align_accel_to_z_world(const Eigen::Vector3d& accel) {
   const Eigen::Quaterniond quat_accel = Eigen::Quaterniond::FromTwoVectors(accel, z_world);
   return Sophus::SO3d(quat_accel);
 }
+
+double clamp01(const double value) {
+  return std::clamp(value, 0.0, 1.0);
+}
 } // namespace
 
 // ==========================
@@ -328,7 +374,8 @@ void LIO::initialize(const Secondsd lidar_time) {
   // the pose for the current time gets logged at the end of register_scan in the typical fashion
   lidar_state.time = lidar_time;
 
-  const Eigen::Vector3d local_gravity = _imu_local_rotation.inverse() * gravity();
+  const Eigen::Vector3d local_gravity =
+      _imu_local_rotation.inverse() * gravity_vector(config.gravity_magnitude);
   imu_bias.accelerometer = avg_accel + local_gravity;
   imu_bias.gyroscope = avg_gyro;
 
@@ -354,7 +401,8 @@ std::optional<AccelInfo> LIO::get_accel_info(const Sophus::SO3d& rotation_estima
   const double accel_mag_variance = interval_stats.welford_sum_of_squares / (interval_stats.imu_count - 1);
   const double dt = (time - lidar_state.time).count();
 
-  const Eigen::Vector3d& body_accel_measurement = avg_imu_accel + rotation_estimate.inverse() * gravity();
+  const Eigen::Vector3d body_accel_measurement =
+      avg_imu_accel + rotation_estimate.inverse() * gravity_vector(config.gravity_magnitude);
 
   const double max_acceleration_change = config.max_expected_jerk * dt;
   // assume [j, -j] range for uniform dist. on jerk. variance is (2j)^2 / 12 = j^2/3. multiply by dt^2 for accel
@@ -454,6 +502,7 @@ std::optional<Sophus::SE3d> LIO::try_global_relocalization(const Vector3dVector&
             initial_guess,
             relocalization_config,
             std::nullopt,
+            std::nullopt,
             voxel_search_radius);
       } catch (const std::exception&) {
         continue;
@@ -523,7 +572,8 @@ void LIO::add_imu_measurement(const ImuControl& base_imu) {
   _imu_local_rotation = _imu_local_rotation * Sophus::SO3d::exp(unbiased_ang_vel * dt);
   _imu_local_rotation_time = base_imu.time;
 
-  const Eigen::Vector3d local_gravity = _imu_local_rotation.inverse() * gravity();
+  const Eigen::Vector3d local_gravity =
+      _imu_local_rotation.inverse() * gravity_vector(config.gravity_magnitude);
   const Eigen::Vector3d compensated_accel = unbiased_accel + local_gravity;
 
   interval_stats.update(unbiased_ang_vel, unbiased_accel, compensated_accel);
@@ -679,11 +729,11 @@ Vector3dVector LIO::register_scan(const Vector3dVector& scan, const TimestampVec
           coarse_config.max_iterations = std::max<size_t>(1, config.coarse_max_iterations);
           coarse_config.max_correspondance_distance =
               std::max(config.max_correspondance_distance, config.coarse_max_correspondance_distance);
-          fine_initial_guess = icp(coarse_keypoints, map, initial_guess, coarse_config, accel_filter_info);
+          fine_initial_guess = icp(coarse_keypoints, map, initial_guess, coarse_config, accel_filter_info, initial_guess);
           last_registration_diagnostics.coarse_to_fine_used = true;
         }
       }
-      optimized_pose = icp(preproc_result.keypoints, map, fine_initial_guess, config, accel_filter_info);
+      optimized_pose = icp(preproc_result.keypoints, map, fine_initial_guess, config, accel_filter_info, fine_initial_guess);
     } catch (const std::exception&) {
       last_registration_diagnostics.consecutive_registration_failures =
           _consecutive_registration_failures + 1;
@@ -735,6 +785,34 @@ Vector3dVector LIO::register_scan(const Vector3dVector& scan, const TimestampVec
       }
     } catch (const std::exception&) {
       last_registration_diagnostics.hessian_condition = std::numeric_limits<double>::infinity();
+    }
+
+    const Sophus::SE3d candidate_motion = lidar_state.pose.inverse() * optimized_pose;
+    const Eigen::Vector6d candidate_delta = candidate_motion.log();
+    const bool stationary_interval =
+        config.enable_stationary_hold &&
+        avg_ang_vel.norm() <= config.stationary_angular_velocity_threshold &&
+        avg_body_accel.norm() <= config.stationary_linear_acceleration_threshold &&
+        candidate_motion.translation().norm() <= config.stationary_max_translation_delta &&
+        candidate_motion.so3().log().norm() <= config.stationary_max_rotation_delta;
+
+    if (stationary_interval) {
+      optimized_pose = lidar_state.pose;
+    } else if (config.enable_degeneracy_damping) {
+      const double condition = last_registration_diagnostics.hessian_condition;
+      if (!std::isfinite(condition) || condition >= config.degeneracy_damping_condition) {
+        const double alpha = clamp01(config.degeneracy_damping_alpha);
+        optimized_pose = lidar_state.pose * Sophus::SE3d::exp(alpha * candidate_delta);
+      }
+    }
+
+    if (config.enable_vertical_spike_filter && config.max_vertical_update_m > 0.0) {
+      const double previous_z = lidar_state.pose.translation().z();
+      const double dz = optimized_pose.translation().z() - previous_z;
+      const double max_dz = std::abs(config.max_vertical_update_m);
+      if (std::isfinite(dz) && std::abs(dz) > max_dz) {
+        optimized_pose.translation().z() = previous_z + std::copysign(max_dz, dz);
+      }
     }
 
     // estimate velocities and accelerations from the new pose

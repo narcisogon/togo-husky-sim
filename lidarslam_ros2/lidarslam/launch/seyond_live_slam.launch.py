@@ -17,6 +17,8 @@ def generate_launch_description():
     rviz = LaunchConfiguration('rviz')
     map_save_period = LaunchConfiguration('map_save_period')
     enable_frontend_stability_filter = LaunchConfiguration('enable_frontend_stability_filter')
+    enable_imu_prediction = LaunchConfiguration('enable_imu_prediction')
+    frontend_path_min_distance = LaunchConfiguration('frontend_path_min_distance')
     backend_odom_topic = LaunchConfiguration('backend_odom_topic')
     publish_static_map_to_odom = LaunchConfiguration('publish_static_map_to_odom')
 
@@ -88,6 +90,41 @@ def generate_launch_description():
         condition=IfCondition(enable_frontend_stability_filter),
     )
 
+    imu_prediction = Node(
+        package='rko_lio',
+        executable='imu_prediction_node',
+        name='imu_prediction',
+        output='screen',
+        emulate_tty=True,
+        parameters=[
+            {
+                'use_sim_time': use_sim_time,
+                'odom_topic': '/rko_lio/odometry',
+                'imu_topic': '/a300_0000/sensors/seyond_robin_w/imu',
+                'predicted_odom_topic': '/rko_lio/odometry_imu_predict',
+                'predicted_path_topic': '/rko_lio/path_imu_predict',
+                'fixed_frame': 'odom',
+                'child_frame': 'base_link_imu_predict',
+                'max_prediction_horizon_sec': 0.12,
+                'max_imu_dt_sec': 0.05,
+                'max_publish_rate_hz': 80.0,
+                'max_path_poses': 12000,
+                'path_min_distance_m': 0.03,
+                'prefer_odom_twist': False,
+                'twist_in_child_frame': True,
+                'use_acceleration': False,
+                'gravity_mps2': 9.8107,
+                'velocity_smoothing_alpha': 0.9,
+                'stationary_velocity_threshold': 0.02,
+                'gyro_deadband_rad_s': 0.002,
+                'max_linear_velocity': 2.0,
+                'max_angular_velocity': 3.0,
+                'max_position_extrapolation_m': 0.08,
+            },
+        ],
+        condition=IfCondition(enable_imu_prediction),
+    )
+
     frontend_path = ExecuteProcess(
         cmd=[
             'python3', '/scripts/odom_to_path.py',
@@ -98,6 +135,7 @@ def generate_launch_description():
             '-p', 'fixed_frame:=odom',
             '-p', 'max_poses:=12000',
             '-p', 'publish_every_n:=1',
+            '-p', ['min_distance_m:=', frontend_path_min_distance],
         ],
         output='screen',
     )
@@ -168,6 +206,16 @@ def generate_launch_description():
             description='Publish /rko_lio/odometry_stable with motion-prior gating and confidence-aware smoothing.',
         ),
         DeclareLaunchArgument(
+            'enable_imu_prediction',
+            default_value='false',
+            description='Publish high-rate short-horizon IMU-predicted odometry/path without changing the main TF tree.',
+        ),
+        DeclareLaunchArgument(
+            'frontend_path_min_distance',
+            default_value='0.005',
+            description='Minimum XY movement before appending a pose to /rko_lio/path.',
+        ),
+        DeclareLaunchArgument(
             'backend_odom_topic',
             default_value='/rko_lio/odometry',
             description='Odometry topic consumed by graph_based_slam.',
@@ -181,6 +229,7 @@ def generate_launch_description():
         rko_node,
         xyzi_adapter,
         frontend_stability_filter,
+        imu_prediction,
         graph_node,
         frontend_path,
         reference_path,

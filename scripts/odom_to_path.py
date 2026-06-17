@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from collections import deque
+import math
 
 import rclpy
 from geometry_msgs.msg import PoseStamped
@@ -21,13 +22,16 @@ class OdomToPath(Node):
         self.declare_parameter('fixed_frame', '')
         self.declare_parameter('max_poses', 5000)
         self.declare_parameter('publish_every_n', 1)
+        self.declare_parameter('min_distance_m', 0.0)
 
         odom_topic = self.get_parameter('odom_topic').get_parameter_value().string_value
         path_topic = self.get_parameter('path_topic').get_parameter_value().string_value
         self.fixed_frame = self.get_parameter('fixed_frame').get_parameter_value().string_value
         self.max_poses = max(1, self.get_parameter('max_poses').get_parameter_value().integer_value)
         self.publish_every_n = max(1, self.get_parameter('publish_every_n').get_parameter_value().integer_value)
+        self.min_distance_m = max(0.0, self.get_parameter('min_distance_m').get_parameter_value().double_value)
         self.count = 0
+        self.last_xy: tuple[float, float] | None = None
         self.poses: deque[PoseStamped] = deque(maxlen=self.max_poses)
 
         qos = QoSProfile(
@@ -40,6 +44,12 @@ class OdomToPath(Node):
         self.get_logger().info(f'Publishing Path {path_topic} from Odometry {odom_topic}')
 
     def on_odom(self, msg: Odometry) -> None:
+        x = msg.pose.pose.position.x
+        y = msg.pose.pose.position.y
+        if self.last_xy is not None and math.hypot(x - self.last_xy[0], y - self.last_xy[1]) < self.min_distance_m:
+            return
+        self.last_xy = (x, y)
+
         pose = PoseStamped()
         pose.header = msg.header
         if self.fixed_frame:

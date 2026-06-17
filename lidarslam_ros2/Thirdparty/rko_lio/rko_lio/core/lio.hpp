@@ -111,6 +111,45 @@ public:
     /** Maximum iterations for the coarse ICP seed. */
     size_t coarse_max_iterations = 20;
 
+    /** Add an IMU-propagated pose prior directly into each registration iteration. */
+    bool enable_imu_pose_prior = false;
+
+    /** Translation weight for the IMU-propagated pose prior. */
+    double imu_pose_prior_translation_weight = 0.0;
+
+    /** Rotation weight for the IMU-propagated pose prior. */
+    double imu_pose_prior_rotation_weight = 0.0;
+
+    /** Damp scan-matching updates when the Hessian indicates degenerate geometry. */
+    bool enable_degeneracy_damping = false;
+
+    /** Hessian condition number above which degeneracy damping is applied. */
+    double degeneracy_damping_condition = 1000.0;
+
+    /** Fraction of the scan-matching update to keep under degeneracy damping. */
+    double degeneracy_damping_alpha = 0.35;
+
+    /** Hold pose when IMU and LiDAR both indicate the rover is stationary. */
+    bool enable_stationary_hold = false;
+
+    /** Stationary angular velocity threshold in rad/s. */
+    double stationary_angular_velocity_threshold = 0.015;
+
+    /** Stationary body acceleration threshold in m/s^2 after gravity compensation. */
+    double stationary_linear_acceleration_threshold = 0.08;
+
+    /** Maximum accepted scan-to-scan translation for stationary hold. */
+    double stationary_max_translation_delta = 0.006;
+
+    /** Maximum accepted scan-to-scan rotation for stationary hold. */
+    double stationary_max_rotation_delta = 0.004;
+
+    /** Clamp sudden scan-to-scan Z jumps caused by weak vertical constraints. */
+    bool enable_vertical_spike_filter = false;
+
+    /** Maximum allowed scan-to-scan Z update before clamping (m). */
+    double max_vertical_update_m = 0.08;
+
     /** Thread count for data association (0 = automatic). */
     int max_num_threads = 0;
 
@@ -119,6 +158,9 @@ public:
 
     /** Maximum expected jerk (m/s³). */
     double max_expected_jerk = 3;
+
+    /** Gravity magnitude in m/s^2. Earth=9.8107, Moon~=1.625. */
+    double gravity_magnitude = GRAVITY_MAG;
 
     /** Enable double downsampling. */
     bool double_downsample = true;
