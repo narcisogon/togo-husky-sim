@@ -69,6 +69,8 @@ GraphBasedSlamComponent::GraphBasedSlamComponent(const rclcpp::NodeOptions & opt
   get_parameter("ndt_resolution", ndt_resolution);
   declare_parameter("ndt_num_threads", 0);
   get_parameter("ndt_num_threads", ndt_num_threads);
+  declare_parameter("global_frame_id", std::string("map"));
+  get_parameter("global_frame_id", global_frame_id_);
   declare_parameter("loop_detection_period", 1000);
   get_parameter("loop_detection_period", loop_detection_period_);
   declare_parameter("deterministic_loop_scheduling", false);
@@ -1012,9 +1014,17 @@ GraphBasedSlamComponent::GraphBasedSlamComponent(const rclcpp::NodeOptions & opt
   get_parameter("use_odom_input", use_odom_input_);
   declare_parameter("submap_distance_threshold", 1.5);
   get_parameter("submap_distance_threshold", submap_distance_threshold_);
+  declare_parameter("publish_map_to_odom_tf", false);
+  get_parameter("publish_map_to_odom_tf", publish_map_to_odom_tf_);
+  declare_parameter("odom_frame_id", std::string("odom"));
+  get_parameter("odom_frame_id", odom_frame_id_);
   std::cout << "use_odom_input:" << std::boolalpha << use_odom_input_ << std::endl;
   if (use_odom_input_) {
     std::cout << "submap_distance_threshold[m]:" << submap_distance_threshold_ << std::endl;
+    std::cout << "publish_map_to_odom_tf:" << std::boolalpha << publish_map_to_odom_tf_ <<
+      std::endl;
+    std::cout << "global_frame_id:" << global_frame_id_ << std::endl;
+    std::cout << "odom_frame_id:" << odom_frame_id_ << std::endl;
   }
   std::cout << "use_imu_preintegration:" << std::boolalpha << use_imu_preintegration_ << std::endl;
   if (use_imu_preintegration_) {
@@ -2846,7 +2856,7 @@ void GraphBasedSlamComponent::doPoseAdjustment(
   lidarslam_msgs::msg::MapArray modified_map_array_msg;
   modified_map_array_msg.header = map_array_msg.header;
   nav_msgs::msg::Path path;
-  path.header.frame_id = "map";
+  path.header.frame_id = global_frame_id_;
   pcl::PointCloud<pcl::PointXYZI>::Ptr map_ptr(new pcl::PointCloud<pcl::PointXYZI>());
   std::vector<TimedSubmapCloud> dynamic_filter_submaps;
   if (do_save_map && use_dynamic_object_filter_) {
@@ -2854,7 +2864,7 @@ void GraphBasedSlamComponent::doPoseAdjustment(
   }
   for (int i = 0; i < submaps_size; i++) {
     g2o::VertexSE3 * vertex_se3 = static_cast<g2o::VertexSE3 *>(optimizer.vertex(i));
-    Eigen::Affine3d se3 = vertex_se3->estimate();
+    Eigen::Isometry3d se3 = vertex_se3->estimate();
     geometry_msgs::msg::Pose pose = tf2::toMsg(se3);
 
     /* map */
@@ -2897,12 +2907,23 @@ void GraphBasedSlamComponent::doPoseAdjustment(
     path.poses.push_back(pose_stamped);
   }
 
+  if (use_odom_input_ && publish_map_to_odom_tf_ && submaps_size > 0) {
+    auto * latest_vertex =
+      static_cast<g2o::VertexSE3 *>(optimizer.vertex(submaps_size - 1));
+    if (latest_vertex != nullptr) {
+      updateMapToOdomCorrection(
+        map_array_msg.submaps[submaps_size - 1].pose,
+        latest_vertex->estimate());
+      publishMapToOdomTf(rclcpp::Time(map_array_msg.submaps[submaps_size - 1].header.stamp));
+    }
+  }
+
   modified_map_array_pub_->publish(modified_map_array_msg);
   modified_path_pub_->publish(path);
 
   sensor_msgs::msg::PointCloud2::SharedPtr map_msg_ptr(new sensor_msgs::msg::PointCloud2);
   pcl::toROSMsg(*map_ptr, *map_msg_ptr);
-  map_msg_ptr->header.frame_id = "map";
+  map_msg_ptr->header.frame_id = global_frame_id_;
   modified_map_pub_->publish(*map_msg_ptr);
   if (do_save_map) {
     pcl::PointCloud<pcl::PointXYZI>::Ptr map_to_save = map_ptr;
@@ -3204,6 +3225,36 @@ Eigen::Quaterniond GraphBasedSlamComponent::integrateImuRotation(double t0, doub
   return delta_q;
 }
 
+void GraphBasedSlamComponent::updateMapToOdomCorrection(
+  const geometry_msgs::msg::Pose & odom_pose,
+  const Eigen::Isometry3d & optimized_map_pose)
+{
+  Eigen::Affine3d odom_affine;
+  tf2::fromMsg(odom_pose, odom_affine);
+  const Eigen::Isometry3d odom_pose_iso(odom_affine.matrix());
+  const Eigen::Isometry3d correction = optimized_map_pose * odom_pose_iso.inverse();
+
+  std::lock_guard<std::mutex> lock(map_to_odom_mtx_);
+  map_to_odom_ = correction;
+}
+
+void GraphBasedSlamComponent::publishMapToOdomTf(const rclcpp::Time & stamp)
+{
+  if (!publish_map_to_odom_tf_) {return;}
+
+  Eigen::Isometry3d correction;
+  {
+    std::lock_guard<std::mutex> lock(map_to_odom_mtx_);
+    correction = map_to_odom_;
+  }
+
+  geometry_msgs::msg::TransformStamped tf_msg = tf2::eigenToTransform(correction);
+  tf_msg.header.stamp = stamp;
+  tf_msg.header.frame_id = global_frame_id_;
+  tf_msg.child_frame_id = odom_frame_id_;
+  broadcaster_.sendTransform(tf_msg);
+}
+
 void GraphBasedSlamComponent::receiveCloud(const sensor_msgs::msg::PointCloud2::SharedPtr msg)
 {
   if (debug_flag_ && !latest_cloud_) {
@@ -3227,6 +3278,7 @@ void GraphBasedSlamComponent::receiveOdometry(const nav_msgs::msg::Odometry & ms
   }
   latest_odom_ = msg;
   latest_odom_valid_ = true;
+  publishMapToOdomTf(rclcpp::Time(msg.header.stamp));
 }
 
 void GraphBasedSlamComponent::tryCreateSubmap()
@@ -3248,10 +3300,11 @@ void GraphBasedSlamComponent::tryCreateSubmap()
   last_submap_position_ = pos;
   last_submap_position_valid_ = true;
 
-  // Create SubMap (use "map" frame for SLAM output regardless of odom frame)
+  // The pose is frontend odom at submap time. Pose graph optimization later
+  // turns the optimized latest submap pose into a map->odom correction.
   lidarslam_msgs::msg::SubMap submap;
   submap.header.stamp = latest_odom_.header.stamp;
-  submap.header.frame_id = "map";
+  submap.header.frame_id = global_frame_id_;
   submap.distance = accumulated_distance_;
   submap.pose = latest_odom_.pose.pose;
   submap.cloud = *latest_cloud_;
@@ -3261,7 +3314,7 @@ void GraphBasedSlamComponent::tryCreateSubmap()
   {
     std::lock_guard<std::mutex> lock(mtx_);
     map_array_msg_.header.stamp = latest_odom_.header.stamp;
-    map_array_msg_.header.frame_id = "map";
+    map_array_msg_.header.frame_id = global_frame_id_;
     map_array_msg_.submaps.push_back(submap);
     n = map_array_msg_.submaps.size();
 

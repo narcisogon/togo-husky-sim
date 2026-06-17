@@ -185,6 +185,10 @@ private:
       const LoopEdges & loop_edges,
       bool do_save_map);
     void publishMapAndPose();
+    void updateMapToOdomCorrection(
+      const geometry_msgs::msg::Pose & odom_pose,
+      const Eigen::Isometry3d & optimized_map_pose);
+    void publishMapToOdomTf(const rclcpp::Time & stamp);
 
     // loop search parameter
     int loop_detection_period_;
@@ -405,6 +409,11 @@ private:
     // Direct odometry + cloud input mode (for LIO frontends)
     bool use_odom_input_ {false};
     double submap_distance_threshold_ {1.5};
+    bool publish_map_to_odom_tf_ {false};
+    std::string global_frame_id_ {"map"};
+    std::string odom_frame_id_ {"odom"};
+    Eigen::Isometry3d map_to_odom_ {Eigen::Isometry3d::Identity()};
+    std::mutex map_to_odom_mtx_;
     rclcpp::Subscription < nav_msgs::msg::Odometry > ::SharedPtr odom_sub_;
     rclcpp::Subscription < sensor_msgs::msg::PointCloud2 > ::SharedPtr cloud_sub_;
     sensor_msgs::msg::PointCloud2::SharedPtr latest_cloud_;

@@ -18,6 +18,7 @@ def generate_launch_description():
     map_save_period = LaunchConfiguration('map_save_period')
     enable_frontend_stability_filter = LaunchConfiguration('enable_frontend_stability_filter')
     backend_odom_topic = LaunchConfiguration('backend_odom_topic')
+    publish_static_map_to_odom = LaunchConfiguration('publish_static_map_to_odom')
 
     rko_node = Node(
         package='rko_lio',
@@ -128,6 +129,7 @@ def generate_launch_description():
             '--frame-id', 'map',
             '--child-frame-id', 'odom',
         ],
+        condition=IfCondition(publish_static_map_to_odom),
     )
 
     map_save_pulse = ExecuteProcess(
@@ -162,13 +164,18 @@ def generate_launch_description():
         DeclareLaunchArgument('map_save_period', default_value='60'),
         DeclareLaunchArgument(
             'enable_frontend_stability_filter',
-            default_value='true',
+            default_value='false',
             description='Publish /rko_lio/odometry_stable with motion-prior gating and confidence-aware smoothing.',
         ),
         DeclareLaunchArgument(
             'backend_odom_topic',
-            default_value='/rko_lio/odometry_stable',
+            default_value='/rko_lio/odometry',
             description='Odometry topic consumed by graph_based_slam.',
+        ),
+        DeclareLaunchArgument(
+            'publish_static_map_to_odom',
+            default_value='false',
+            description='Fallback identity map->odom TF. Keep false when graph_based_slam publishes dynamic correction.',
         ),
         DeclareLaunchArgument('rviz', default_value='true'),
         rko_node,

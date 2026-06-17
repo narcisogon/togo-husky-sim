@@ -89,7 +89,9 @@ graph_based_slam:
   ros__parameters:
     use_sim_time: true
     use_odom_input: true
-    global_frame_id: map
+    global_frame_id: map                         # Global navigation/map frame owned by the backend.
+    odom_frame_id: odom                          # Continuous local frame owned by RKO-LIO frontend.
+    publish_map_to_odom_tf: true                 # Backend publishes map->odom correction; navigation uses map->base_link through TF.
     map_save_dir: /ws/src/lidarslam_ros2/output/husky_seyond_graph
     registration_method: "NDT"
     ndt_resolution: 5.0
