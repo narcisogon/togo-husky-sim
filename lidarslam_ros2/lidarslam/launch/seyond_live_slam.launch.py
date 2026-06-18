@@ -16,6 +16,7 @@ def generate_launch_description():
     use_sim_time = LaunchConfiguration('use_sim_time')
     rviz = LaunchConfiguration('rviz')
     map_save_period = LaunchConfiguration('map_save_period')
+    enable_map_save_pulse = LaunchConfiguration('enable_map_save_pulse')
     enable_frontend_stability_filter = LaunchConfiguration('enable_frontend_stability_filter')
     enable_imu_prediction = LaunchConfiguration('enable_imu_prediction')
     frontend_path_min_distance = LaunchConfiguration('frontend_path_min_distance')
@@ -181,6 +182,7 @@ def generate_launch_description():
         ],
         output='screen',
         additional_env={'MAP_SAVE_PERIOD': map_save_period},
+        condition=IfCondition(enable_map_save_pulse),
     )
 
     rviz_node = Node(
@@ -200,6 +202,11 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument('use_sim_time', default_value='true'),
         DeclareLaunchArgument('map_save_period', default_value='60'),
+        DeclareLaunchArgument(
+            'enable_map_save_pulse',
+            default_value='false',
+            description='Periodically call /map_save. Disable during Nav2 tests to avoid extra ros2 CLI DDS participants.',
+        ),
         DeclareLaunchArgument(
             'enable_frontend_stability_filter',
             default_value='false',

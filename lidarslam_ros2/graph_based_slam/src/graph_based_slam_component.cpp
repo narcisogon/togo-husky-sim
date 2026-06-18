@@ -2914,7 +2914,7 @@ void GraphBasedSlamComponent::doPoseAdjustment(
       updateMapToOdomCorrection(
         map_array_msg.submaps[submaps_size - 1].pose,
         latest_vertex->estimate());
-      publishMapToOdomTf(rclcpp::Time(map_array_msg.submaps[submaps_size - 1].header.stamp));
+      publishMapToOdomTf(this->now());
     }
   }
 

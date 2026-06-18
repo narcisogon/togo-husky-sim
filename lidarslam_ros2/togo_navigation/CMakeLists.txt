@@ -1,0 +1,48 @@
+cmake_minimum_required(VERSION 3.8)
+project(togo_navigation)
+
+find_package(ament_cmake REQUIRED)
+find_package(geometry_msgs REQUIRED)
+find_package(nav_msgs REQUIRED)
+find_package(rclcpp REQUIRED)
+find_package(sensor_msgs REQUIRED)
+find_package(tf2 REQUIRED)
+find_package(tf2_geometry_msgs REQUIRED)
+find_package(tf2_ros REQUIRED)
+
+add_executable(slam_to_occupancy_grid src/slam_to_occupancy_grid.cpp)
+target_compile_features(slam_to_occupancy_grid PUBLIC cxx_std_17)
+ament_target_dependencies(slam_to_occupancy_grid
+  geometry_msgs
+  nav_msgs
+  rclcpp
+  sensor_msgs
+  tf2
+  tf2_geometry_msgs
+  tf2_ros
+)
+
+add_executable(occupancy_grid_to_points src/occupancy_grid_to_points.cpp)
+target_compile_features(occupancy_grid_to_points PUBLIC cxx_std_17)
+ament_target_dependencies(occupancy_grid_to_points
+  nav_msgs
+  rclcpp
+  sensor_msgs
+)
+
+install(DIRECTORY config launch rviz
+  DESTINATION share/${PROJECT_NAME}
+)
+
+install(PROGRAMS
+  scripts/debug_map_publisher.py
+  DESTINATION lib/${PROJECT_NAME}
+)
+
+install(TARGETS
+  slam_to_occupancy_grid
+  occupancy_grid_to_points
+  DESTINATION lib/${PROJECT_NAME}
+)
+
+ament_package()

@@ -1,0 +1,62 @@
+Panels:
+  - Class: rviz_common/Displays
+Visualization Manager:
+  Class: ""
+  Displays:
+    - Class: rviz_default_plugins/TF
+      Enabled: true
+      Name: TF
+    - Class: rviz_default_plugins/Map
+      Enabled: false
+      Name: Global Costmap
+      Topic:
+        Value: /global_costmap/costmap
+    - Class: rviz_default_plugins/Map
+      Enabled: false
+      Name: Local Costmap
+      Topic:
+        Value: /local_costmap/costmap
+    - Class: rviz_default_plugins/Map
+      Enabled: false
+      Name: SLAM Occupancy Grid
+      Topic:
+        Value: /map
+    - Class: rviz_default_plugins/PointCloud2
+      Enabled: true
+      Name: SLAM Map Occupied Cells
+      Topic:
+        Value: /map_debug_points
+    - Class: rviz_default_plugins/PointCloud2
+      Enabled: true
+      Name: Global Costmap Occupied Cells
+      Topic:
+        Value: /global_costmap/debug_points
+    - Class: rviz_default_plugins/PointCloud2
+      Enabled: true
+      Name: Backend Modified Map
+      Topic:
+        Value: /modified_map
+    - Class: rviz_default_plugins/PointCloud2
+      Enabled: true
+      Name: Registered LiDAR
+      Topic:
+        Value: /rko_lio/frame_xyzi
+    - Class: rviz_default_plugins/Path
+      Enabled: true
+      Name: Global Plan
+      Topic:
+        Value: /plan
+    - Class: rviz_default_plugins/Path
+      Enabled: true
+      Name: RKO Path
+      Topic:
+        Value: /rko_lio/path
+    - Class: rviz_default_plugins/Path
+      Enabled: true
+      Name: Backend Path
+      Topic:
+        Value: /modified_path
+  Enabled: true
+  Global Options:
+    Fixed Frame: map
+  Name: root
