@@ -38,7 +38,7 @@ controller_server:
       max_lookahead_dist: 1.2
       lookahead_time: 1.5
       rotate_to_heading_angular_vel: 0.6
-      transform_tolerance: 0.2
+      transform_tolerance: 0.5
       use_velocity_scaled_lookahead_dist: true
       min_approach_linear_velocity: 0.05
       approach_velocity_scaling_dist: 0.8
@@ -66,13 +66,13 @@ local_costmap:
       width: 8
       height: 8
       resolution: 0.10
-      transform_tolerance: 0.3
+      transform_tolerance: 0.5
       footprint: "[[0.55, 0.38], [0.55, -0.38], [-0.55, -0.38], [-0.55, 0.38]]"
       plugins: ["inflation_layer"]
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        inflation_radius: 0.65
-        cost_scaling_factor: 3.0
+        inflation_radius: 0.45
+        cost_scaling_factor: 4.0
       always_send_full_costmap: true
 
 global_costmap:
@@ -85,18 +85,20 @@ global_costmap:
       robot_base_frame: base_link
       resolution: 0.15
       track_unknown_space: true
-      transform_tolerance: 0.5
+      transform_tolerance: 0.7
       footprint: "[[0.55, 0.38], [0.55, -0.38], [-0.55, -0.38], [-0.55, 0.38]]"
       plugins: ["static_layer", "inflation_layer"]
       static_layer:
         plugin: "nav2_costmap_2d::StaticLayer"
         map_subscribe_transient_local: true
         subscribe_to_updates: true
+        trinary_costmap: false
+        lethal_cost_threshold: 95
         topic: /map
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        inflation_radius: 0.85
-        cost_scaling_factor: 3.0
+        inflation_radius: 0.55
+        cost_scaling_factor: 4.0
       always_send_full_costmap: true
 
 planner_server:
@@ -155,7 +157,7 @@ behavior_server:
     local_frame: odom
     global_frame: map
     robot_base_frame: base_link
-    transform_tolerance: 0.2
+    transform_tolerance: 0.5
     simulate_ahead_time: 2.0
     max_rotational_vel: 0.5
     min_rotational_vel: 0.05
@@ -166,7 +168,7 @@ collision_monitor:
     use_sim_time: true
     base_frame_id: base_link
     odom_frame_id: odom
-    transform_tolerance: 0.2
+    transform_tolerance: 0.5
     source_timeout: 1.0
     base_shift_correction: true
     stop_pub_timeout: 2.0

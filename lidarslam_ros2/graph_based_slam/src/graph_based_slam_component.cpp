@@ -1016,6 +1016,12 @@ GraphBasedSlamComponent::GraphBasedSlamComponent(const rclcpp::NodeOptions & opt
   get_parameter("submap_distance_threshold", submap_distance_threshold_);
   declare_parameter("publish_map_to_odom_tf", false);
   get_parameter("publish_map_to_odom_tf", publish_map_to_odom_tf_);
+  declare_parameter("map_to_odom_tf_future_offset_sec", 0.0);
+  get_parameter("map_to_odom_tf_future_offset_sec", map_to_odom_tf_future_offset_sec_);
+  declare_parameter("modified_map_publish_period_sec", 0.0);
+  get_parameter("modified_map_publish_period_sec", modified_map_publish_period_sec_);
+  declare_parameter("modified_map_leaf_size", 0.0);
+  get_parameter("modified_map_leaf_size", modified_map_leaf_size_);
   declare_parameter("odom_frame_id", std::string("odom"));
   get_parameter("odom_frame_id", odom_frame_id_);
   std::cout << "use_odom_input:" << std::boolalpha << use_odom_input_ << std::endl;
@@ -1023,6 +1029,11 @@ GraphBasedSlamComponent::GraphBasedSlamComponent(const rclcpp::NodeOptions & opt
     std::cout << "submap_distance_threshold[m]:" << submap_distance_threshold_ << std::endl;
     std::cout << "publish_map_to_odom_tf:" << std::boolalpha << publish_map_to_odom_tf_ <<
       std::endl;
+    std::cout << "map_to_odom_tf_future_offset_sec:" <<
+      map_to_odom_tf_future_offset_sec_ << std::endl;
+    std::cout << "modified_map_publish_period_sec:" <<
+      modified_map_publish_period_sec_ << std::endl;
+    std::cout << "modified_map_leaf_size:" << modified_map_leaf_size_ << std::endl;
     std::cout << "global_frame_id:" << global_frame_id_ << std::endl;
     std::cout << "odom_frame_id:" << odom_frame_id_ << std::endl;
   }
@@ -1152,6 +1163,18 @@ void GraphBasedSlamComponent::initializePubSub()
     "modified_path",
     rclcpp::QoS(10));
 
+  if (modified_map_publish_period_sec_ > 0.0) {
+    const auto period = std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::duration<double>(std::max(0.1, modified_map_publish_period_sec_)));
+    modified_map_publish_timer_ = create_wall_timer(
+      period,
+      std::bind(&GraphBasedSlamComponent::publishMapAndPose, this));
+    RCLCPP_INFO(
+      get_logger(),
+      "Periodic modified map publishing enabled at %.2f sec",
+      modified_map_publish_period_sec_);
+  }
+
   if (use_imu_preintegration_) {
     auto imu_callback =
       [this](const sensor_msgs::msg::Imu::SharedPtr msg) -> void
@@ -1193,6 +1216,20 @@ void GraphBasedSlamComponent::handleMapSaveRequest(
     return;
   }
   doPoseAdjustment(map_array_msg, loop_edges, true);
+}
+
+void GraphBasedSlamComponent::publishMapAndPose()
+{
+  lidarslam_msgs::msg::MapArray map_array_msg;
+  LoopEdges loop_edges;
+  if (!snapshotGraphState(map_array_msg, loop_edges, false)) {
+    RCLCPP_INFO_THROTTLE(
+      get_logger(), *get_clock(), 5000,
+      "Waiting for initial map before periodic modified_map publish");
+    return;
+  }
+
+  doPoseAdjustment(map_array_msg, loop_edges, false);
 }
 
 bool GraphBasedSlamComponent::snapshotGraphState(
@@ -2591,6 +2628,8 @@ void GraphBasedSlamComponent::doPoseAdjustment(
   const LoopEdges & loop_edges,
   bool do_save_map)
 {
+  std::lock_guard<std::mutex> publish_lock(modified_map_publish_mtx_);
+
   g2o::SparseOptimizer optimizer;
   optimizer.setVerbose(false);
   std::unique_ptr<g2o::BlockSolver_6_3::LinearSolverType> linear_solver =
@@ -2921,8 +2960,24 @@ void GraphBasedSlamComponent::doPoseAdjustment(
   modified_map_array_pub_->publish(modified_map_array_msg);
   modified_path_pub_->publish(path);
 
+  pcl::PointCloud<pcl::PointXYZI>::Ptr map_to_publish = map_ptr;
+  if (modified_map_leaf_size_ > 0.0 && !map_ptr->empty()) {
+    pcl::PointCloud<pcl::PointXYZI>::Ptr downsampled_map(
+      new pcl::PointCloud<pcl::PointXYZI>);
+    pcl::VoxelGrid<pcl::PointXYZI> publish_voxelgrid;
+    publish_voxelgrid.setInputCloud(map_ptr);
+    const auto leaf_size = static_cast<float>(modified_map_leaf_size_);
+    publish_voxelgrid.setLeafSize(leaf_size, leaf_size, leaf_size);
+    publish_voxelgrid.filter(*downsampled_map);
+    map_to_publish = downsampled_map;
+    RCLCPP_INFO_THROTTLE(
+      get_logger(), *get_clock(), 5000,
+      "Voxelized /modified_map points %zu -> %zu leaf=%.3fm",
+      map_ptr->size(), map_to_publish->size(), modified_map_leaf_size_);
+  }
+
   sensor_msgs::msg::PointCloud2::SharedPtr map_msg_ptr(new sensor_msgs::msg::PointCloud2);
-  pcl::toROSMsg(*map_ptr, *map_msg_ptr);
+  pcl::toROSMsg(*map_to_publish, *map_msg_ptr);
   map_msg_ptr->header.frame_id = global_frame_id_;
   modified_map_pub_->publish(*map_msg_ptr);
   if (do_save_map) {
@@ -3249,7 +3304,8 @@ void GraphBasedSlamComponent::publishMapToOdomTf(const rclcpp::Time & stamp)
   }
 
   geometry_msgs::msg::TransformStamped tf_msg = tf2::eigenToTransform(correction);
-  tf_msg.header.stamp = stamp;
+  tf_msg.header.stamp = stamp +
+    rclcpp::Duration::from_seconds(std::max(0.0, map_to_odom_tf_future_offset_sec_));
   tf_msg.header.frame_id = global_frame_id_;
   tf_msg.child_frame_id = odom_frame_id_;
   broadcaster_.sendTransform(tf_msg);

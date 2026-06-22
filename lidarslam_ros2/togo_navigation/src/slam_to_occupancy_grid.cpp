@@ -2,6 +2,7 @@
 #include <cmath>
 #include <cstdint>
 #include <functional>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -65,6 +66,18 @@ public:
     unknown_value_ = declare_parameter<int>("unknown_value", -1);
     initialize_as_free_ = declare_parameter<bool>("initialize_as_free", true);
     obstacle_dilation_cells_ = declare_parameter<int>("obstacle_dilation_cells", 1);
+    enable_gradient_costs_ = declare_parameter<bool>("enable_gradient_costs", false);
+    gradient_radius_m_ = declare_parameter<double>("gradient_radius_m", 0.8);
+    gradient_min_cost_ = declare_parameter<int>("gradient_min_cost", 5);
+    gradient_power_ = declare_parameter<double>("gradient_power", 1.0);
+    enable_terrain_hazards_ = declare_parameter<bool>("enable_terrain_hazards", false);
+    terrain_min_height_ = declare_parameter<double>("terrain_min_height", -1.0);
+    terrain_max_height_ = declare_parameter<double>("terrain_max_height", 1.2);
+    terrain_slope_hazard_deg_ = declare_parameter<double>("terrain_slope_hazard_deg", 15.0);
+    terrain_step_hazard_m_ = declare_parameter<double>("terrain_step_hazard_m", 0.18);
+    terrain_min_points_per_cell_ = declare_parameter<int>("terrain_min_points_per_cell", 3);
+    terrain_neighbor_radius_cells_ = declare_parameter<int>("terrain_neighbor_radius_cells", 1);
+    terrain_hazard_dilation_cells_ = declare_parameter<int>("terrain_hazard_dilation_cells", 0);
     max_input_range_m_ = declare_parameter<double>("max_input_range_m", 120.0);
     clear_robot_radius_m_ = declare_parameter<double>("clear_robot_radius_m", 1.0);
     robot_frame_ = declare_parameter<std::string>("robot_frame", "base_link");
@@ -79,6 +92,16 @@ public:
     height_cells_ = std::max(1, static_cast<int>(std::ceil(height_m_ / resolution_)));
     min_points_per_cell_ = std::max(1, min_points_per_cell_);
     obstacle_dilation_cells_ = std::max(0, obstacle_dilation_cells_);
+    gradient_radius_m_ = std::max(0.0, gradient_radius_m_);
+    gradient_min_cost_ = std::clamp(gradient_min_cost_, 0, 99);
+    gradient_power_ = std::max(0.1, gradient_power_);
+    terrain_slope_hazard_deg_ = std::clamp(terrain_slope_hazard_deg_, 0.0, 89.0);
+    terrain_step_hazard_m_ = std::max(0.0, terrain_step_hazard_m_);
+    terrain_min_points_per_cell_ = std::max(1, terrain_min_points_per_cell_);
+    terrain_neighbor_radius_cells_ = std::max(1, terrain_neighbor_radius_cells_);
+    terrain_hazard_dilation_cells_ = std::max(0, terrain_hazard_dilation_cells_);
+    occupied_value_ = std::clamp(occupied_value_, 1, 100);
+    free_value_ = std::clamp(free_value_, 0, 100);
     clear_robot_radius_m_ = std::max(0.0, clear_robot_radius_m_);
 
     rclcpp::QoS map_qos(1);
@@ -127,7 +150,17 @@ private:
     auto [map_origin_x, map_origin_y] = getMapOrigin();
 
     std::vector<int> counts(static_cast<size_t>(width_cells_ * height_cells_), 0);
+    std::vector<int> terrain_counts(static_cast<size_t>(width_cells_ * height_cells_), 0);
+    std::vector<double> terrain_sum_z(static_cast<size_t>(width_cells_ * height_cells_), 0.0);
+    std::vector<double> terrain_min_z(
+      static_cast<size_t>(width_cells_ * height_cells_),
+      std::numeric_limits<double>::infinity());
+    std::vector<double> terrain_max_z(
+      static_cast<size_t>(width_cells_ * height_cells_),
+      -std::numeric_limits<double>::infinity());
+    std::vector<std::pair<int, int>> obstacle_cells;
     size_t accepted_points = 0;
+    size_t terrain_points = 0;
 
     try {
       sensor_msgs::PointCloud2ConstIterator<float> iter_x(*cloud, "x");
@@ -142,9 +175,6 @@ private:
         if (needs_transform) {
           point = transformPoint(point, transform);
         }
-        if (point.z < min_obstacle_height_ || point.z > max_obstacle_height_) {
-          continue;
-        }
         if (max_input_range_m_ > 0.0 && std::hypot(point.x, point.y) > max_input_range_m_) {
           continue;
         }
@@ -154,7 +184,22 @@ private:
         if (x < 0 || y < 0 || x >= width_cells_ || y >= height_cells_) {
           continue;
         }
-        counts[static_cast<size_t>(y * width_cells_ + x)] += 1;
+        const size_t idx = static_cast<size_t>(y * width_cells_ + x);
+
+        if (enable_terrain_hazards_ &&
+          point.z >= terrain_min_height_ && point.z <= terrain_max_height_)
+        {
+          terrain_counts[idx] += 1;
+          terrain_sum_z[idx] += point.z;
+          terrain_min_z[idx] = std::min(terrain_min_z[idx], point.z);
+          terrain_max_z[idx] = std::max(terrain_max_z[idx], point.z);
+          ++terrain_points;
+        }
+
+        if (point.z < min_obstacle_height_ || point.z > max_obstacle_height_) {
+          continue;
+        }
+        counts[idx] += 1;
         ++accepted_points;
       }
     } catch (const std::runtime_error & ex) {
@@ -183,26 +228,39 @@ private:
         if (counts[idx] < min_points_per_cell_) {
           continue;
         }
-        markOccupied(map, x, y);
+        markHazardCore(map, x, y, obstacle_cells, obstacle_dilation_cells_);
         ++occupied_cells;
       }
     }
 
+    const size_t terrain_hazard_cells = enable_terrain_hazards_ ?
+      markTerrainHazards(
+        map, terrain_counts, terrain_sum_z, terrain_min_z, terrain_max_z, obstacle_cells) :
+      0;
+
+    if (enable_gradient_costs_) {
+      applyGradientCosts(map, obstacle_cells);
+    }
     clearRobotFootprint(map, map_origin_x, map_origin_y);
     map_pub_->publish(map);
     received_cloud_ = true;
     RCLCPP_INFO_THROTTLE(
       get_logger(), *get_clock(), 3000,
-      "Published /map from %zu accepted points; occupied_cells=%zu",
-      accepted_points, occupied_cells);
+      "Published /map from %zu obstacle points and %zu terrain points; occupied_cells=%zu terrain_hazards=%zu",
+      accepted_points, terrain_points, occupied_cells, terrain_hazard_cells);
   }
 
-  void markOccupied(nav_msgs::msg::OccupancyGrid & map, const int center_x, const int center_y) const
+  void markHazardCore(
+    nav_msgs::msg::OccupancyGrid & map,
+    const int center_x,
+    const int center_y,
+    std::vector<std::pair<int, int>> & obstacle_cells,
+    const int dilation_cells) const
   {
-    for (int dy = -obstacle_dilation_cells_; dy <= obstacle_dilation_cells_; ++dy) {
-      for (int dx = -obstacle_dilation_cells_; dx <= obstacle_dilation_cells_; ++dx) {
+    for (int dy = -dilation_cells; dy <= dilation_cells; ++dy) {
+      for (int dx = -dilation_cells; dx <= dilation_cells; ++dx) {
         if (dx * dx + dy * dy >
-          obstacle_dilation_cells_ * obstacle_dilation_cells_)
+          dilation_cells * dilation_cells)
         {
           continue;
         }
@@ -211,8 +269,121 @@ private:
         if (x < 0 || y < 0 || x >= width_cells_ || y >= height_cells_) {
           continue;
         }
-        map.data[static_cast<size_t>(y * width_cells_ + x)] =
-          static_cast<int8_t>(occupied_value_);
+        const size_t idx = static_cast<size_t>(y * width_cells_ + x);
+        if (map.data[idx] < occupied_value_) {
+          map.data[idx] = static_cast<int8_t>(occupied_value_);
+          obstacle_cells.emplace_back(x, y);
+        }
+      }
+    }
+  }
+
+  size_t markTerrainHazards(
+    nav_msgs::msg::OccupancyGrid & map,
+    const std::vector<int> & terrain_counts,
+    const std::vector<double> & terrain_sum_z,
+    const std::vector<double> & terrain_min_z,
+    const std::vector<double> & terrain_max_z,
+    std::vector<std::pair<int, int>> & obstacle_cells) const
+  {
+    std::vector<double> mean_z(
+      static_cast<size_t>(width_cells_ * height_cells_),
+      std::numeric_limits<double>::quiet_NaN());
+    for (int y = 0; y < height_cells_; ++y) {
+      for (int x = 0; x < width_cells_; ++x) {
+        const size_t idx = static_cast<size_t>(y * width_cells_ + x);
+        if (terrain_counts[idx] >= terrain_min_points_per_cell_) {
+          mean_z[idx] = terrain_sum_z[idx] / static_cast<double>(terrain_counts[idx]);
+        }
+      }
+    }
+
+    constexpr double pi = 3.14159265358979323846;
+    const double slope_threshold = std::tan(terrain_slope_hazard_deg_ * pi / 180.0);
+    size_t hazard_cells = 0;
+    for (int y = 0; y < height_cells_; ++y) {
+      for (int x = 0; x < width_cells_; ++x) {
+        const size_t idx = static_cast<size_t>(y * width_cells_ + x);
+        if (!std::isfinite(mean_z[idx])) {
+          continue;
+        }
+
+        bool hazard = false;
+        if (terrain_max_z[idx] - terrain_min_z[idx] >= terrain_step_hazard_m_) {
+          hazard = true;
+        }
+
+        for (int dy = -terrain_neighbor_radius_cells_; !hazard && dy <= terrain_neighbor_radius_cells_; ++dy) {
+          for (int dx = -terrain_neighbor_radius_cells_; dx <= terrain_neighbor_radius_cells_; ++dx) {
+            if (dx == 0 && dy == 0) {
+              continue;
+            }
+            const int nx = x + dx;
+            const int ny = y + dy;
+            if (nx < 0 || ny < 0 || nx >= width_cells_ || ny >= height_cells_) {
+              continue;
+            }
+            const size_t neighbor_idx = static_cast<size_t>(ny * width_cells_ + nx);
+            if (!std::isfinite(mean_z[neighbor_idx])) {
+              continue;
+            }
+            const double horizontal_distance =
+              resolution_ * std::hypot(static_cast<double>(dx), static_cast<double>(dy));
+            if (horizontal_distance <= 0.0) {
+              continue;
+            }
+            const double slope = std::abs(mean_z[idx] - mean_z[neighbor_idx]) / horizontal_distance;
+            if (slope >= slope_threshold) {
+              hazard = true;
+              break;
+            }
+          }
+        }
+
+        if (hazard) {
+          markHazardCore(map, x, y, obstacle_cells, terrain_hazard_dilation_cells_);
+          ++hazard_cells;
+        }
+      }
+    }
+    return hazard_cells;
+  }
+
+  void applyGradientCosts(
+    nav_msgs::msg::OccupancyGrid & map,
+    const std::vector<std::pair<int, int>> & obstacle_cells) const
+  {
+    const int radius_cells = static_cast<int>(std::ceil(gradient_radius_m_ / resolution_));
+    if (radius_cells <= 0 || obstacle_cells.empty()) {
+      return;
+    }
+
+    for (const auto & [center_x, center_y] : obstacle_cells) {
+      for (int dy = -radius_cells; dy <= radius_cells; ++dy) {
+        for (int dx = -radius_cells; dx <= radius_cells; ++dx) {
+          const double distance_cells = std::hypot(static_cast<double>(dx), static_cast<double>(dy));
+          if (distance_cells > radius_cells) {
+            continue;
+          }
+
+          const int x = center_x + dx;
+          const int y = center_y + dy;
+          if (x < 0 || y < 0 || x >= width_cells_ || y >= height_cells_) {
+            continue;
+          }
+
+          const size_t idx = static_cast<size_t>(y * width_cells_ + x);
+          if (map.data[idx] < 0 || map.data[idx] >= occupied_value_) {
+            continue;
+          }
+
+          const double normalized_distance = distance_cells / static_cast<double>(radius_cells);
+          const double falloff = std::pow(1.0 - normalized_distance, gradient_power_);
+          const int cost = gradient_min_cost_ +
+            static_cast<int>(std::round((occupied_value_ - gradient_min_cost_) * falloff));
+          map.data[idx] = static_cast<int8_t>(
+            std::max(static_cast<int>(map.data[idx]), std::clamp(cost, gradient_min_cost_, occupied_value_)));
+        }
       }
     }
   }
@@ -331,6 +502,18 @@ private:
   int unknown_value_ {};
   bool initialize_as_free_ {};
   int obstacle_dilation_cells_ {};
+  bool enable_gradient_costs_ {};
+  double gradient_radius_m_ {};
+  int gradient_min_cost_ {};
+  double gradient_power_ {};
+  bool enable_terrain_hazards_ {};
+  double terrain_min_height_ {};
+  double terrain_max_height_ {};
+  double terrain_slope_hazard_deg_ {};
+  double terrain_step_hazard_m_ {};
+  int terrain_min_points_per_cell_ {};
+  int terrain_neighbor_radius_cells_ {};
+  int terrain_hazard_dilation_cells_ {};
   double max_input_range_m_ {};
   double clear_robot_radius_m_ {};
   std::string robot_frame_;

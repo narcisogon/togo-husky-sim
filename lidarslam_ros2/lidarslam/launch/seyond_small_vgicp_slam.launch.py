@@ -19,7 +19,7 @@ def generate_launch_description():
 
     xyzi_adapter = ExecuteProcess(
         cmd=[
-            'python3', '/scripts/add_intensity_to_cloud.py',
+            'python3', '/ws/src/lidarslam_ros2/scripts/togo/add_intensity_to_cloud.py',
             '--ros-args',
             '-p', ['input_topic:=', raw_cloud_topic],
             '-p', ['output_topic:=', xyzi_cloud_topic],
@@ -66,7 +66,7 @@ def generate_launch_description():
 
     pose_to_odom = ExecuteProcess(
         cmd=[
-            'python3', '/scripts/pose_to_odom.py',
+            'python3', '/ws/src/lidarslam_ros2/scripts/togo/pose_to_odom.py',
             '--ros-args',
             '-r', '__node:=small_vgicp_pose_to_odom',
             '-p', 'pose_topic:=/small_vgicp/current_pose',
@@ -78,7 +78,7 @@ def generate_launch_description():
 
     reference_path = ExecuteProcess(
         cmd=[
-            'python3', '/scripts/gazebo_pose_to_aligned_path.py',
+            'python3', '/ws/src/lidarslam_ros2/scripts/togo/gazebo_pose_to_aligned_path.py',
             '--ros-args',
             '-r', '__node:=small_vgicp_reference_path_publisher',
             '-p', 'pose_topic:=/gazebo/dynamic_pose',

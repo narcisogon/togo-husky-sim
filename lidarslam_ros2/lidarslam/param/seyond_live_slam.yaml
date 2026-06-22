@@ -108,6 +108,9 @@ graph_based_slam:
     global_frame_id: map                         # Global navigation/map frame owned by the backend.
     odom_frame_id: odom                          # Continuous local frame owned by RKO-LIO frontend.
     publish_map_to_odom_tf: true                 # Backend publishes map->odom correction; navigation uses map->base_link through TF.
+    map_to_odom_tf_future_offset_sec: 0.15       # Future-stamp backend TF slightly so Nav2 does not abort on small frontend/backend timing gaps.
+    modified_map_publish_period_sec: 1.0         # Refresh /modified_map periodically so Nav2/global OGM sees backend-corrected updates without waiting for /map_save.
+    modified_map_leaf_size: 0.15                 # Voxel leaf for published /modified_map only; reduces overlapping points as the map grows.
     map_save_dir: /ws/src/lidarslam_ros2/output/husky_seyond_graph
     registration_method: "NDT"
     ndt_resolution: 5.0

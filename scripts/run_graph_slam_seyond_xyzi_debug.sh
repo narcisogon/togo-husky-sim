@@ -14,7 +14,7 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-python3 /scripts/add_intensity_to_cloud.py \
+python3 /ws/src/lidarslam_ros2/scripts/togo/add_intensity_to_cloud.py \
   --ros-args \
   -p input_topic:=/rko_lio/frame \
   -p output_topic:=/rko_lio/frame_xyzi \

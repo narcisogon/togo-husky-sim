@@ -6,6 +6,19 @@
 
 ROS 2 LiDAR SLAM. Frontend is `RKO-LIO` (MIT), backend is `graph_based_slam` (BSD-2). Output is an Autoware-compatible `pointcloud_map/` directory plus `map_projector_info.yaml`. No GPL components on the default workflow.
 
+## TOGO Rover SLAM/Nav
+
+The rover-specific live SLAM and Nav2 workflow is documented in [docs/togo_slam_nav_overview.md](docs/togo_slam_nav_overview.md).
+
+Primary commands inside the Docker workspace:
+
+```bash
+bash /ws/src/lidarslam_ros2/scripts/togo/run_live_seyond_slam_integrated.sh
+bash /ws/src/lidarslam_ros2/scripts/togo/run_nav2_with_slam.sh
+```
+
+The old `/scripts/run_live_seyond_slam_integrated.sh` and `/scripts/run_nav2_with_slam.sh` commands still work as compatibility wrappers.
+
 `develop` tracks the current v2 alpha line. Latest tagged public beta: [v0.2.2 Release Notes](docs/releases/v0.2.2.md).
 
 ![Autoware-compatible pointcloud_map rendered by Autoware map loaders](lidarslam/images/autoware_map_loader_proof.png)

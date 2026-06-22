@@ -148,6 +148,7 @@ private:
     rclcpp::Publisher < nav_msgs::msg::Path > ::SharedPtr modified_path_pub_;
     rclcpp::Publisher < sensor_msgs::msg::PointCloud2 > ::SharedPtr modified_map_pub_;
     rclcpp::TimerBase::SharedPtr loop_detect_timer_;
+    rclcpp::TimerBase::SharedPtr modified_map_publish_timer_;
     rclcpp::Service < std_srvs::srv::Empty > ::SharedPtr map_save_srv_;
 
     struct LoopEdge
@@ -410,10 +411,14 @@ private:
     bool use_odom_input_ {false};
     double submap_distance_threshold_ {1.5};
     bool publish_map_to_odom_tf_ {false};
+    double map_to_odom_tf_future_offset_sec_ {0.0};
+    double modified_map_publish_period_sec_ {0.0};
+    double modified_map_leaf_size_ {0.0};
     std::string global_frame_id_ {"map"};
     std::string odom_frame_id_ {"odom"};
     Eigen::Isometry3d map_to_odom_ {Eigen::Isometry3d::Identity()};
     std::mutex map_to_odom_mtx_;
+    std::mutex modified_map_publish_mtx_;
     rclcpp::Subscription < nav_msgs::msg::Odometry > ::SharedPtr odom_sub_;
     rclcpp::Subscription < sensor_msgs::msg::PointCloud2 > ::SharedPtr cloud_sub_;
     sensor_msgs::msg::PointCloud2::SharedPtr latest_cloud_;
