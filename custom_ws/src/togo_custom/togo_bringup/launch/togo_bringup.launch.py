@@ -56,7 +56,8 @@ def generate_launch_description():
         name='seyond_robin_w_imu_static_tf',
         output='screen',
         arguments=[
-            '--x', '0.0', '--y', '0.0', '--z', '0.0',
+            # Keep this in sync with togo_description.urdf.xacro.
+            '--x', '0.15', '--y', '-0.05', '--z', '0.08',
             '--roll', '0.0', '--pitch', '0.0', '--yaw', '0.0',
             '--frame-id', 'seyond_robin_w_link',
             '--child-frame-id', 'seyond_robin_w_imu_frame',

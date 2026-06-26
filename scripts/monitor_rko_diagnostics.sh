@@ -1,35 +1,20 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-DURATION_SEC="${1:-10}"
+DURATION_SEC="${1:-0}"
+if [[ $# -gt 0 ]]; then
+  shift
+fi
+SCRIPT_PATH="/ws/src/lidarslam_ros2/scripts/togo/rko_diagnostics_monitor.py"
+
+if [[ ! -f "${SCRIPT_PATH}" ]]; then
+  SCRIPT_PATH="/mnt/c/Users/Username/OneDrive/Desktop/husky/lidarslam_ros2/scripts/togo/rko_diagnostics_monitor.py"
+fi
 
 if ! [[ "$DURATION_SEC" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
   echo "Usage: $0 [duration_seconds]" >&2
+  echo "Use 0 or omit the argument to run until Ctrl-C." >&2
   exit 2
 fi
 
-run_for_duration() {
-  local label="$1"
-  shift
-  echo
-  echo "===== ${label} (${DURATION_SEC}s) ====="
-  timeout "${DURATION_SEC}" "$@" || {
-    local code=$?
-    if [[ "$code" -ne 124 ]]; then
-      echo "Command failed with exit code ${code}: $*" >&2
-      return "$code"
-    fi
-  }
-}
-
-run_for_duration "runtime diagnostics" \
-  ros2 topic echo /rko_lio/runtime_diagnostics
-
-run_for_duration "registration diagnostics" \
-  ros2 topic echo /rko_lio/registration_diagnostics
-
-run_for_duration "raw odometry hz" \
-  ros2 topic hz /rko_lio/odometry
-
-run_for_duration "stable odometry hz" \
-  ros2 topic hz /rko_lio/odometry_stable
+python3 "${SCRIPT_PATH}" --duration "${DURATION_SEC}" "$@"

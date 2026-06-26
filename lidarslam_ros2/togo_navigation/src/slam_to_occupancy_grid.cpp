@@ -5,6 +5,7 @@
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <geometry_msgs/msg/transform_stamped.hpp>
@@ -80,6 +81,10 @@ public:
     terrain_hazard_dilation_cells_ = declare_parameter<int>("terrain_hazard_dilation_cells", 0);
     max_input_range_m_ = declare_parameter<double>("max_input_range_m", 120.0);
     clear_robot_radius_m_ = declare_parameter<double>("clear_robot_radius_m", 1.0);
+    enable_robot_trail_clearing_ = declare_parameter<bool>("enable_robot_trail_clearing", false);
+    robot_trail_clear_radius_m_ = declare_parameter<double>("robot_trail_clear_radius_m", 0.9);
+    robot_trail_max_poses_ = declare_parameter<int>("robot_trail_max_poses", 300);
+    robot_trail_min_distance_m_ = declare_parameter<double>("robot_trail_min_distance_m", 0.15);
     robot_frame_ = declare_parameter<std::string>("robot_frame", "base_link");
     center_map_on_robot_ = declare_parameter<bool>("center_map_on_robot", true);
     publish_empty_map_until_first_cloud_ =
@@ -103,6 +108,9 @@ public:
     occupied_value_ = std::clamp(occupied_value_, 1, 100);
     free_value_ = std::clamp(free_value_, 0, 100);
     clear_robot_radius_m_ = std::max(0.0, clear_robot_radius_m_);
+    robot_trail_clear_radius_m_ = std::max(0.0, robot_trail_clear_radius_m_);
+    robot_trail_max_poses_ = std::max(1, robot_trail_max_poses_);
+    robot_trail_min_distance_m_ = std::max(0.0, robot_trail_min_distance_m_);
 
     rclcpp::QoS map_qos(1);
     map_qos.reliable();
@@ -241,6 +249,8 @@ private:
     if (enable_gradient_costs_) {
       applyGradientCosts(map, obstacle_cells);
     }
+    updateRobotTrail();
+    clearRobotTrail(map, map_origin_x, map_origin_y);
     clearRobotFootprint(map, map_origin_x, map_origin_y);
     map_pub_->publish(map);
     received_cloud_ = true;
@@ -406,6 +416,8 @@ private:
     map.data.assign(
       static_cast<size_t>(width_cells_ * height_cells_),
       static_cast<int8_t>(free_value_));
+    updateRobotTrail();
+    clearRobotTrail(map, map_origin_x, map_origin_y);
     clearRobotFootprint(map, map_origin_x, map_origin_y);
     map_pub_->publish(map);
 
@@ -486,6 +498,70 @@ private:
     }
   }
 
+  void updateRobotTrail()
+  {
+    if (!enable_robot_trail_clearing_) {
+      return;
+    }
+
+    geometry_msgs::msg::TransformStamped transform;
+    try {
+      transform = tf_buffer_.lookupTransform(target_frame_, robot_frame_, tf2::TimePointZero);
+    } catch (const tf2::TransformException & ex) {
+      RCLCPP_WARN_THROTTLE(
+        get_logger(), *get_clock(), 3000,
+        "Could not update robot trail; waiting for %s -> %s: %s",
+        target_frame_.c_str(), robot_frame_.c_str(), ex.what());
+      return;
+    }
+
+    const double x = transform.transform.translation.x;
+    const double y = transform.transform.translation.y;
+    if (!robot_trail_.empty()) {
+      const auto & last = robot_trail_.back();
+      if (std::hypot(x - last.first, y - last.second) < robot_trail_min_distance_m_) {
+        return;
+      }
+    }
+
+    robot_trail_.emplace_back(x, y);
+    while (static_cast<int>(robot_trail_.size()) > robot_trail_max_poses_) {
+      robot_trail_.erase(robot_trail_.begin());
+    }
+  }
+
+  void clearRobotTrail(
+    nav_msgs::msg::OccupancyGrid & map,
+    const double map_origin_x,
+    const double map_origin_y)
+  {
+    if (!enable_robot_trail_clearing_ || robot_trail_clear_radius_m_ <= 0.0) {
+      return;
+    }
+
+    const int radius_cells = static_cast<int>(std::ceil(robot_trail_clear_radius_m_ / resolution_));
+    for (const auto & pose : robot_trail_) {
+      const int center_x =
+        static_cast<int>(std::floor((pose.first - map_origin_x) / resolution_));
+      const int center_y =
+        static_cast<int>(std::floor((pose.second - map_origin_y) / resolution_));
+      for (int dy = -radius_cells; dy <= radius_cells; ++dy) {
+        for (int dx = -radius_cells; dx <= radius_cells; ++dx) {
+          if (dx * dx + dy * dy > radius_cells * radius_cells) {
+            continue;
+          }
+          const int x = center_x + dx;
+          const int y = center_y + dy;
+          if (x < 0 || y < 0 || x >= width_cells_ || y >= height_cells_) {
+            continue;
+          }
+          map.data[static_cast<size_t>(y * width_cells_ + x)] =
+            static_cast<int8_t>(free_value_);
+        }
+      }
+    }
+  }
+
   std::string input_cloud_topic_;
   std::string output_map_topic_;
   std::string target_frame_;
@@ -516,6 +592,11 @@ private:
   int terrain_hazard_dilation_cells_ {};
   double max_input_range_m_ {};
   double clear_robot_radius_m_ {};
+  bool enable_robot_trail_clearing_ {};
+  double robot_trail_clear_radius_m_ {};
+  int robot_trail_max_poses_ {};
+  double robot_trail_min_distance_m_ {};
+  std::vector<std::pair<double, double>> robot_trail_;
   std::string robot_frame_;
   bool center_map_on_robot_ {true};
   bool publish_empty_map_until_first_cloud_ {true};

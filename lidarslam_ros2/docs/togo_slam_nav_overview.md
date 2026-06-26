@@ -111,12 +111,15 @@ Nav2 needs an occupancy grid. The backend map is a point cloud, so `togo_navigat
 Important outputs:
 
 - `/map`: `nav_msgs/OccupancyGrid` used by Nav2 static layer
+- `/local_hazard_map`: rolling local hazard grid built from live `/rko_lio/frame_xyzi`
 - `/map_debug_points`: point cloud visualization of occupied cells in `/map`
+- `/local_hazard_debug_points`: point cloud visualization of occupied cells in `/local_hazard_map`
 - `/global_costmap/debug_points`: point cloud visualization of occupied cells in Nav2 global costmap
 
 Main files:
 
 - `togo_navigation/src/slam_to_occupancy_grid.cpp`: converts `/modified_map` to `/map`
+- `togo_navigation/src/local_hazard_grid.cpp`: converts recent live frontend clouds to `/local_hazard_map`
 - `togo_navigation/src/occupancy_grid_to_points.cpp`: converts occupancy grids to point clouds for RViz debugging
 - `togo_navigation/launch/rover_nav2.launch.py`: starts the mapper and debug point publishers
 
@@ -124,9 +127,14 @@ Current mapper source:
 
 ```text
 /modified_map -> slam_to_occupancy_grid -> /map
+/rko_lio/frame_xyzi -> local_hazard_grid -> /local_hazard_map
 ```
 
-That means the OGM is built from the backend-corrected map, and the backend map comes from the frontend odometry/cloud stream.
+That means the global OGM is built from the backend-corrected map, while local hazards are built from recent live frontend clouds. The global map stays corrected by loop closures; the local map reacts quickly and naturally clears old hazards as its short time window rolls forward.
+
+For current TOGO navigation, aggressive slope/step terrain hazards are intentionally kept out of the global `/map`. The global map is used as corrected structure, and `/local_hazard_map` handles immediate slope/step risk. This prevents a loop-closure shift in the global backend map from creating large inflated hazard blobs near the rover.
+
+Nav2 consumes local hazards through `/local_hazard_debug_points` as an obstacle layer, not as a static local map. That avoids repeated local costmap resize events from the rolling `/local_hazard_map` origin.
 
 Useful mapper parameters:
 

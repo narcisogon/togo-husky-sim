@@ -50,6 +50,7 @@ public:
     double hessian_condition = 0.0;
     int consecutive_registration_failures = 0;
     bool coarse_to_fine_used = false;
+    double degeneracy_damping_alpha_applied = 1.0;
   };
 
   /** Configuration parameters for odometry. */
@@ -128,6 +129,12 @@ public:
 
     /** Fraction of the scan-matching update to keep under degeneracy damping. */
     double degeneracy_damping_alpha = 0.35;
+
+    /** Scale damping by condition severity instead of using a fixed alpha. */
+    bool adaptive_degeneracy_damping = true;
+
+    /** Lower bound for adaptive degeneracy damping update scale. */
+    double degeneracy_damping_min_alpha = 0.08;
 
     /** Hold pose when IMU and LiDAR both indicate the rover is stationary. */
     bool enable_stationary_hold = false;

@@ -30,6 +30,25 @@ ament_target_dependencies(occupancy_grid_to_points
   sensor_msgs
 )
 
+add_executable(local_hazard_grid src/local_hazard_grid.cpp)
+target_compile_features(local_hazard_grid PUBLIC cxx_std_17)
+ament_target_dependencies(local_hazard_grid
+  geometry_msgs
+  nav_msgs
+  rclcpp
+  sensor_msgs
+  tf2
+  tf2_geometry_msgs
+  tf2_ros
+)
+
+add_executable(seyond_cloud_time_adapter src/seyond_cloud_time_adapter.cpp)
+target_compile_features(seyond_cloud_time_adapter PUBLIC cxx_std_17)
+ament_target_dependencies(seyond_cloud_time_adapter
+  rclcpp
+  sensor_msgs
+)
+
 install(DIRECTORY config launch rviz
   DESTINATION share/${PROJECT_NAME}
 )
@@ -42,6 +61,8 @@ install(PROGRAMS
 install(TARGETS
   slam_to_occupancy_grid
   occupancy_grid_to_points
+  local_hazard_grid
+  seyond_cloud_time_adapter
   DESTINATION lib/${PROJECT_NAME}
 )
 

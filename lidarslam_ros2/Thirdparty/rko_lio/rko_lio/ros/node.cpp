@@ -75,6 +75,8 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(LIO::Config,
                                    enable_degeneracy_damping,
                                    degeneracy_damping_condition,
                                    degeneracy_damping_alpha,
+                                   adaptive_degeneracy_damping,
+                                   degeneracy_damping_min_alpha,
                                    enable_stationary_hold,
                                    stationary_angular_velocity_threshold,
                                    stationary_linear_acceleration_threshold,
@@ -223,6 +225,10 @@ Node::Node(const std::string& node_name, const rclcpp::NodeOptions& options) {
       node->declare_parameter<double>("degeneracy_damping_condition", lio_config.degeneracy_damping_condition);
   lio_config.degeneracy_damping_alpha =
       node->declare_parameter<double>("degeneracy_damping_alpha", lio_config.degeneracy_damping_alpha);
+  lio_config.adaptive_degeneracy_damping =
+      node->declare_parameter<bool>("adaptive_degeneracy_damping", lio_config.adaptive_degeneracy_damping);
+  lio_config.degeneracy_damping_min_alpha =
+      node->declare_parameter<double>("degeneracy_damping_min_alpha", lio_config.degeneracy_damping_min_alpha);
   lio_config.enable_stationary_hold =
       node->declare_parameter<bool>("enable_stationary_hold", lio_config.enable_stationary_hold);
   lio_config.stationary_angular_velocity_threshold =
@@ -580,6 +586,7 @@ void Node::publish_registration_metrics(const core::LIO::RegistrationDiagnostics
       static_cast<float>(diagnostics.hessian_condition),
       static_cast<float>(diagnostics.consecutive_registration_failures),
       diagnostics.coarse_to_fine_used ? 1.0f : 0.0f,
+      static_cast<float>(diagnostics.degeneracy_damping_alpha_applied),
   };
   registration_diagnostics_publisher->publish(msg);
 }

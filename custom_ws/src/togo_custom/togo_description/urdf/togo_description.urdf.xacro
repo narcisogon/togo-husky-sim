@@ -50,7 +50,8 @@
   <joint name="seyond_robin_w_imu_joint" type="fixed">
     <parent link="seyond_robin_w_link"/>
     <child link="seyond_robin_w_imu_frame"/>
-    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <!-- Known LiDAR-to-IMU offset for extrinsic self-calibration tests. -->
+    <origin xyz="0.15 -0.05 0.08" rpy="0 0 0"/>
   </joint>
 
   <gazebo reference="seyond_robin_w_lidar_frame">

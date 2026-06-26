@@ -801,7 +801,14 @@ Vector3dVector LIO::register_scan(const Vector3dVector& scan, const TimestampVec
     } else if (config.enable_degeneracy_damping) {
       const double condition = last_registration_diagnostics.hessian_condition;
       if (!std::isfinite(condition) || condition >= config.degeneracy_damping_condition) {
-        const double alpha = clamp01(config.degeneracy_damping_alpha);
+        const double max_alpha = clamp01(config.degeneracy_damping_alpha);
+        double alpha = max_alpha;
+        if (config.adaptive_degeneracy_damping && std::isfinite(condition) && condition > 0.0) {
+          const double ratio = std::max(0.0, config.degeneracy_damping_condition) / condition;
+          const double min_alpha = std::min(max_alpha, clamp01(config.degeneracy_damping_min_alpha));
+          alpha = std::clamp(max_alpha * ratio, min_alpha, max_alpha);
+        }
+        last_registration_diagnostics.degeneracy_damping_alpha_applied = alpha;
         optimized_pose = lidar_state.pose * Sophus::SE3d::exp(alpha * candidate_delta);
       }
     }

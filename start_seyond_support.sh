@@ -60,7 +60,7 @@ start_node "Seyond LiDAR static TF" \
   ros2 run tf2_ros static_transform_publisher 0.0 0.0 0.0 0.0 0.0 0.0 seyond_robin_w_link seyond_robin_w_lidar_frame
 
 start_node "Seyond IMU static TF" \
-  ros2 run tf2_ros static_transform_publisher 0.0 0.0 0.0 0.0 0.0 0.0 seyond_robin_w_link seyond_robin_w_imu_frame
+  ros2 run tf2_ros static_transform_publisher 0.15 -0.05 0.08 0.0 0.0 0.0 seyond_robin_w_link seyond_robin_w_imu_frame
 
 echo
 echo "Seyond support is running. Keep this terminal open."
