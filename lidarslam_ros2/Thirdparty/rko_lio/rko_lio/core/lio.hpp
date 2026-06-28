@@ -51,6 +51,10 @@ public:
     int consecutive_registration_failures = 0;
     bool coarse_to_fine_used = false;
     double degeneracy_damping_alpha_applied = 1.0;
+    double eigen_degeneracy_min_scale_applied = 1.0;
+    double adaptive_imu_pose_prior_translation_weight_applied = 0.0;
+    double adaptive_imu_pose_prior_rotation_weight_applied = 0.0;
+    bool rover_degeneracy_motion_constraint_applied = false;
   };
 
   /** Configuration parameters for odometry. */
@@ -121,6 +125,21 @@ public:
     /** Rotation weight for the IMU-propagated pose prior. */
     double imu_pose_prior_rotation_weight = 0.0;
 
+    /** Increase the IMU pose prior when LiDAR geometry becomes weak. */
+    bool enable_adaptive_imu_pose_prior = true;
+
+    /** Hessian condition where adaptive IMU prior starts increasing. */
+    double adaptive_imu_pose_prior_condition = 1500.0;
+
+    /** Hessian condition ratio where adaptive IMU prior reaches max weights. */
+    double adaptive_imu_pose_prior_max_condition_ratio = 8.0;
+
+    /** Maximum adaptive translation prior weight under severe degeneracy. */
+    double adaptive_imu_pose_prior_max_translation_weight = 0.05;
+
+    /** Maximum adaptive rotation prior weight under severe degeneracy. */
+    double adaptive_imu_pose_prior_max_rotation_weight = 2.0;
+
     /** Damp scan-matching updates when the Hessian indicates degenerate geometry. */
     bool enable_degeneracy_damping = false;
 
@@ -135,6 +154,15 @@ public:
 
     /** Lower bound for adaptive degeneracy damping update scale. */
     double degeneracy_damping_min_alpha = 0.08;
+
+    /** Project ICP updates through Hessian eigenvectors and damp only weak directions. */
+    bool enable_eigen_degeneracy_projection = true;
+
+    /** Hessian condition where weak eigen-directions are damped. */
+    double eigen_degeneracy_projection_condition = 1500.0;
+
+    /** Minimum update scale for severely weak eigen-directions. */
+    double eigen_degeneracy_projection_min_scale = 0.05;
 
     /** Hold pose when IMU and LiDAR both indicate the rover is stationary. */
     bool enable_stationary_hold = false;
@@ -156,6 +184,27 @@ public:
 
     /** Maximum allowed scan-to-scan Z update before clamping (m). */
     double max_vertical_update_m = 0.08;
+
+    /** Shape weak-geometry motion using rover kinematics instead of freezing all motion. */
+    bool enable_rover_degeneracy_motion_constraint = true;
+
+    /** Hessian condition where rover motion shaping becomes active. */
+    double rover_degeneracy_motion_condition = 6000.0;
+
+    /** Scale for local forward translation under degeneracy. */
+    double rover_degeneracy_forward_scale = 1.0;
+
+    /** Scale for local lateral translation under degeneracy. */
+    double rover_degeneracy_lateral_scale = 0.25;
+
+    /** Scale for local vertical translation under degeneracy. */
+    double rover_degeneracy_vertical_scale = 0.10;
+
+    /** Scale for local roll/pitch under degeneracy. */
+    double rover_degeneracy_roll_pitch_scale = 0.20;
+
+    /** Scale for local yaw under degeneracy. */
+    double rover_degeneracy_yaw_scale = 1.0;
 
     /** Thread count for data association (0 = automatic). */
     int max_num_threads = 0;

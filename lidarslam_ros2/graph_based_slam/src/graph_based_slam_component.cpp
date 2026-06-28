@@ -1022,6 +1022,8 @@ GraphBasedSlamComponent::GraphBasedSlamComponent(const rclcpp::NodeOptions & opt
   get_parameter("modified_map_publish_period_sec", modified_map_publish_period_sec_);
   declare_parameter("modified_map_leaf_size", 0.0);
   get_parameter("modified_map_leaf_size", modified_map_leaf_size_);
+  declare_parameter("odom_input_cloud_in_odom_frame", false);
+  get_parameter("odom_input_cloud_in_odom_frame", odom_input_cloud_in_odom_frame_);
   declare_parameter("odom_frame_id", std::string("odom"));
   get_parameter("odom_frame_id", odom_frame_id_);
   std::cout << "use_odom_input:" << std::boolalpha << use_odom_input_ << std::endl;
@@ -1034,6 +1036,8 @@ GraphBasedSlamComponent::GraphBasedSlamComponent(const rclcpp::NodeOptions & opt
     std::cout << "modified_map_publish_period_sec:" <<
       modified_map_publish_period_sec_ << std::endl;
     std::cout << "modified_map_leaf_size:" << modified_map_leaf_size_ << std::endl;
+    std::cout << "odom_input_cloud_in_odom_frame:" << std::boolalpha <<
+      odom_input_cloud_in_odom_frame_ << std::endl;
     std::cout << "global_frame_id:" << global_frame_id_ << std::endl;
     std::cout << "odom_frame_id:" << odom_frame_id_ << std::endl;
   }
@@ -3363,7 +3367,32 @@ void GraphBasedSlamComponent::tryCreateSubmap()
   submap.header.frame_id = global_frame_id_;
   submap.distance = accumulated_distance_;
   submap.pose = latest_odom_.pose.pose;
-  submap.cloud = *latest_cloud_;
+  if (odom_input_cloud_in_odom_frame_) {
+    static bool warned_odom_cloud_conversion = false;
+    if (debug_flag_ && !warned_odom_cloud_conversion) {
+      RCLCPP_INFO(
+        get_logger(),
+        "Odom input cloud is already in odom frame; converting each cloud back to %s before submap storage",
+        latest_odom_.child_frame_id.c_str());
+      warned_odom_cloud_conversion = true;
+    }
+
+    pcl::PointCloud<pcl::PointXYZI>::Ptr odom_cloud(new pcl::PointCloud<pcl::PointXYZI>);
+    pcl::PointCloud<pcl::PointXYZI>::Ptr local_cloud(new pcl::PointCloud<pcl::PointXYZI>);
+    pcl::fromROSMsg(*latest_cloud_, *odom_cloud);
+
+    Eigen::Affine3d odom_affine;
+    tf2::fromMsg(latest_odom_.pose.pose, odom_affine);
+    pcl::transformPointCloud(
+      *odom_cloud,
+      *local_cloud,
+      odom_affine.inverse().matrix().cast<float>());
+
+    pcl::toROSMsg(*local_cloud, submap.cloud);
+    submap.cloud.header = latest_cloud_->header;
+  } else {
+    submap.cloud = *latest_cloud_;
+  }
   submap.cloud.header.frame_id = latest_odom_.child_frame_id;
 
   int n;

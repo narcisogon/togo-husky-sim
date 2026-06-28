@@ -29,7 +29,7 @@ rko_lio_online_node:
     deskew: false                              # Deskew each scan with IMU/motion prediction; enable only when point timing is trustworthy.
     voxel_size: 0.25                           # Main voxel size for downsampling and local map resolution; larger is faster/stabler live.
     double_downsample: false                   # KISS-ICP style two-stage downsample; false keeps one downsample path.
-    min_range: 0.2                             # Drop LiDAR points closer than this range in meters.
+    min_range: 0.9                             # Drop LiDAR points closer than this range in meters.
     max_range: 80.0                            # Drop LiDAR points farther than this range in meters.
     max_points_per_voxel: 20                   # Max points stored per local-map voxel.
 
@@ -59,11 +59,19 @@ rko_lio_online_node:
     enable_imu_pose_prior: true                # Add the IMU-propagated scan pose as a soft prior inside ICP iterations.
     imu_pose_prior_translation_weight: 0.00    # Low translation pull; LiDAR still owns position when geometry is good.
     imu_pose_prior_rotation_weight: 0.50        # Stronger rotation pull from gyro/IMU to reduce yaw/attitude jitter.
-    enable_degeneracy_damping: true           # Reduce ICP update size when Hessian condition indicates weak/sliding geometry.
+    enable_adaptive_imu_pose_prior: true       # Increase IMU/rover prior weights only when LiDAR Hessian is weak.
+    adaptive_imu_pose_prior_condition: 6000.0  # Start raising prior weights only under clear weak-geometry conditions.
+    adaptive_imu_pose_prior_max_condition_ratio: 10.0  # Reach max prior weights near condition ~= condition * ratio.
+    adaptive_imu_pose_prior_max_translation_weight: 0.01  # Keep translation prior light so real rover motion does not freeze.
+    adaptive_imu_pose_prior_max_rotation_weight: 1.0       # Moderate weak-geometry rotation prior from IMU prediction.
+    enable_degeneracy_damping: false          # Fallback whole-update damping; prefer eigen projection below for normal operation.
     degeneracy_damping_condition: 1500.0       # Apply damping above this Hessian condition number.
     degeneracy_damping_alpha: 0.35             # Max fraction of scan update to keep when geometry is weak.
     adaptive_degeneracy_damping: true          # Scale damping by condition severity: higher condition -> smaller update.
     degeneracy_damping_min_alpha: 0.08         # Minimum scan-update scale under severe degeneracy; prevents total freezing.
+    enable_eigen_degeneracy_projection: true   # Damp only weak Hessian eigen-directions, preserving well-constrained motion.
+    eigen_degeneracy_projection_condition: 6000.0  # Direction-level condition threshold for eigen projection.
+    eigen_degeneracy_projection_min_scale: 0.25     # Minimum scale for weak directions; avoids locking motion in severe degeneracy.
     enable_stationary_hold: false              # Hold pose when IMU and LiDAR both indicate the rover is parked.
     stationary_angular_velocity_threshold: 0.015  # rad/s threshold for parked gyro.
     stationary_linear_acceleration_threshold: 0.08  # m/s^2 threshold after gravity compensation.
@@ -71,6 +79,13 @@ rko_lio_online_node:
     stationary_max_rotation_delta: 0.004       # Max scan-to-scan rotation still considered parked.
     enable_vertical_spike_filter: true          # Clamp sudden one-frame Z jumps from weak vertical scan constraints.
     max_vertical_update_m: 0.08                 # Max allowed scan-to-scan Z update; raise for rough terrain, lower for flat testing.
+    enable_rover_degeneracy_motion_constraint: true  # When geometry is weak, keep rover-like forward/yaw motion and suppress sideways/Z/roll/pitch drift.
+    rover_degeneracy_motion_condition: 6000.0   # Hessian condition where rover motion shaping turns on; your weak-yard runs are far above this.
+    rover_degeneracy_forward_scale: 1.0         # Preserve local forward motion under degeneracy so the rover can still move.
+    rover_degeneracy_lateral_scale: 0.25        # Reduce local side-slip updates that featureless walls/floors cannot constrain well.
+    rover_degeneracy_vertical_scale: 0.10       # Strongly reduce local Z motion from weak vertical geometry.
+    rover_degeneracy_roll_pitch_scale: 0.20     # Strongly reduce roll/pitch scan corrections; IMU should carry attitude here.
+    rover_degeneracy_yaw_scale: 1.0             # Preserve yaw updates; lower this if yaw starts wandering in repeated geometry.
 
     # Timing and recovery behavior.
     max_scan_delta_sec: 10.0                   # Drop and advance through scans whose timestamp gap exceeds this many seconds.

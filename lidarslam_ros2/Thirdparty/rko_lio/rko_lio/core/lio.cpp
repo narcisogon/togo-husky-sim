@@ -50,6 +50,8 @@ constexpr double EPSILON = 1e-8;
 constexpr auto EPSILON_TIME = std::chrono::nanoseconds(10);
 using namespace rko_lio::core;
 
+double clamp01(const double value);
+
 inline void transform_points(const Sophus::SE3d& T, Vector3dVector& points) {
   std::transform(points.begin(), points.end(), points.begin(), [&](const auto& point) { return T * point; });
 }
@@ -219,13 +221,108 @@ LinearSystem build_pose_prior_linear_system(const Sophus::SE3d& current_pose,
   return LinearSystem{H, H * residual, chi};
 }
 
+struct HessianAnalysis {
+  bool valid = false;
+  double min_eigenvalue = 0.0;
+  double max_eigenvalue = 0.0;
+  double condition = std::numeric_limits<double>::infinity();
+  Eigen::Vector6d eigenvalues = Eigen::Vector6d::Zero();
+  Eigen::Matrix6d eigenvectors = Eigen::Matrix6d::Identity();
+};
+
+HessianAnalysis analyze_hessian(const Eigen::Matrix6d& H) {
+  HessianAnalysis analysis;
+  Eigen::SelfAdjointEigenSolver<Eigen::Matrix6d> solver(H);
+  if (solver.info() != Eigen::Success) {
+    return analysis;
+  }
+  analysis.valid = true;
+  analysis.eigenvalues = solver.eigenvalues();
+  analysis.eigenvectors = solver.eigenvectors();
+  analysis.min_eigenvalue = analysis.eigenvalues.minCoeff();
+  analysis.max_eigenvalue = analysis.eigenvalues.maxCoeff();
+  analysis.condition = analysis.min_eigenvalue > 1e-9
+                           ? analysis.max_eigenvalue / analysis.min_eigenvalue
+                           : std::numeric_limits<double>::infinity();
+  return analysis;
+}
+
+double degeneracy_severity(const double condition, const double start_condition, const double max_ratio) {
+  if (!std::isfinite(condition) || start_condition <= 0.0) {
+    return 1.0;
+  }
+  const double ratio = condition / start_condition;
+  if (ratio <= 1.0) {
+    return 0.0;
+  }
+  const double denom = std::max(1e-6, max_ratio - 1.0);
+  return std::clamp((ratio - 1.0) / denom, 0.0, 1.0);
+}
+
+std::pair<double, double> adaptive_pose_prior_weights(const LIO::Config& config,
+                                                      const HessianAnalysis& analysis) {
+  double translation_weight = config.imu_pose_prior_translation_weight;
+  double rotation_weight = config.imu_pose_prior_rotation_weight;
+  if (!config.enable_adaptive_imu_pose_prior) {
+    return {translation_weight, rotation_weight};
+  }
+
+  const double start_condition = config.adaptive_imu_pose_prior_condition > 0.0
+                                     ? config.adaptive_imu_pose_prior_condition
+                                     : config.degeneracy_damping_condition;
+  const double severity =
+      degeneracy_severity(analysis.condition, start_condition, config.adaptive_imu_pose_prior_max_condition_ratio);
+  translation_weight += severity *
+                        (std::max(translation_weight, config.adaptive_imu_pose_prior_max_translation_weight) -
+                         translation_weight);
+  rotation_weight += severity *
+                     (std::max(rotation_weight, config.adaptive_imu_pose_prior_max_rotation_weight) -
+                      rotation_weight);
+  return {translation_weight, rotation_weight};
+}
+
+Eigen::Vector6d project_degenerate_update(const Eigen::Vector6d& dx,
+                                          const LIO::Config& config,
+                                          const HessianAnalysis& analysis,
+                                          double& min_scale_applied) {
+  min_scale_applied = 1.0;
+  if (!config.enable_eigen_degeneracy_projection || !analysis.valid || analysis.max_eigenvalue <= 1e-9) {
+    return dx;
+  }
+
+  const double condition_threshold = config.eigen_degeneracy_projection_condition > 0.0
+                                         ? config.eigen_degeneracy_projection_condition
+                                         : config.degeneracy_damping_condition;
+  if (condition_threshold <= 0.0 || analysis.condition < condition_threshold) {
+    return dx;
+  }
+
+  const double min_scale = clamp01(config.eigen_degeneracy_projection_min_scale);
+  Eigen::Vector6d projected = Eigen::Vector6d::Zero();
+  for (int i = 0; i < 6; ++i) {
+    const double lambda = analysis.eigenvalues[i];
+    const double direction_condition =
+        lambda > 1e-9 ? analysis.max_eigenvalue / lambda : std::numeric_limits<double>::infinity();
+    double scale = 1.0;
+    if (!std::isfinite(direction_condition) || direction_condition >= condition_threshold) {
+      scale = std::isfinite(direction_condition)
+                  ? std::clamp(condition_threshold / direction_condition, min_scale, 1.0)
+                  : min_scale;
+    }
+    min_scale_applied = std::min(min_scale_applied, scale);
+    projected += scale * analysis.eigenvectors.col(i).dot(dx) * analysis.eigenvectors.col(i);
+  }
+  return projected;
+}
+
 Sophus::SE3d icp(const Vector3dVector& frame,
                  const SparseVoxelGrid& voxel_map,
                  const Sophus::SE3d& initial_guess,
                  const LIO::Config& config,
                  const std::optional<AccelInfo>& optional_accel_info,
                  const std::optional<Sophus::SE3d>& optional_pose_prior = std::nullopt,
-                 const int voxel_search_radius = 1) {
+                 const int voxel_search_radius = 1,
+                 LIO::RegistrationDiagnostics* diagnostics = nullptr) {
   // in case config disables it, or we don't have valid IMU information for this icp loop, beta is -1
   const double beta = (config.min_beta > 0 && optional_accel_info.has_value())
                           ? (config.min_beta * (1 + optional_accel_info->accel_mag_variance))
@@ -234,10 +331,11 @@ Sophus::SE3d icp(const Vector3dVector& frame,
   Sophus::SE3d current_pose = initial_guess;
 
   for (size_t i = 0; i < config.max_iterations; ++i) {
+    const auto& [H_icp, b_icp, chi_icp] =
+        build_icp_linear_system(current_pose, frame, voxel_map, config, voxel_search_radius);
+    const HessianAnalysis hessian_analysis = analyze_hessian(H_icp);
+
     const auto& [H, b, chi] = std::invoke([&]() -> LinearSystem {
-      const auto& [H_icp, b_icp, chi_icp] =
-          build_icp_linear_system(
-              current_pose, frame, voxel_map, config, voxel_search_radius);
       if (beta >= 0) {
         const auto& [H_ori, b_ori, chi_ori] =
             build_orientation_linear_system(
@@ -248,29 +346,46 @@ Sophus::SE3d icp(const Vector3dVector& frame,
         Eigen::Vector6d b = b_icp + b_ori / beta;
         double chi = chi_icp + chi_ori / beta;
         if (config.enable_imu_pose_prior && optional_pose_prior.has_value()) {
+          const auto [translation_weight, rotation_weight] =
+              adaptive_pose_prior_weights(config, hessian_analysis);
           const auto& [H_prior, b_prior, chi_prior] =
               build_pose_prior_linear_system(current_pose,
                                              optional_pose_prior.value(),
-                                             config.imu_pose_prior_translation_weight,
-                                             config.imu_pose_prior_rotation_weight);
+                                             translation_weight,
+                                             rotation_weight);
           H += H_prior;
           b += b_prior;
           chi += chi_prior;
+          if (diagnostics != nullptr) {
+            diagnostics->adaptive_imu_pose_prior_translation_weight_applied = translation_weight;
+            diagnostics->adaptive_imu_pose_prior_rotation_weight_applied = rotation_weight;
+          }
         }
         return {H, b, chi};
       }
       if (config.enable_imu_pose_prior && optional_pose_prior.has_value()) {
+        const auto [translation_weight, rotation_weight] =
+            adaptive_pose_prior_weights(config, hessian_analysis);
         const auto& [H_prior, b_prior, chi_prior] =
             build_pose_prior_linear_system(current_pose,
                                            optional_pose_prior.value(),
-                                           config.imu_pose_prior_translation_weight,
-                                           config.imu_pose_prior_rotation_weight);
+                                           translation_weight,
+                                           rotation_weight);
+        if (diagnostics != nullptr) {
+          diagnostics->adaptive_imu_pose_prior_translation_weight_applied = translation_weight;
+          diagnostics->adaptive_imu_pose_prior_rotation_weight_applied = rotation_weight;
+        }
         return {H_icp + H_prior, b_icp + b_prior, chi_icp + chi_prior};
       }
       return {H_icp, b_icp, chi_icp};
     });
 
-    const Eigen::Vector6d dx = H.ldlt().solve(-b);
+    const Eigen::Vector6d raw_dx = H.ldlt().solve(-b);
+    double min_projection_scale = 1.0;
+    const Eigen::Vector6d dx = project_degenerate_update(raw_dx, config, hessian_analysis, min_projection_scale);
+    if (diagnostics != nullptr) {
+      diagnostics->eigen_degeneracy_min_scale_applied = min_projection_scale;
+    }
     current_pose = Sophus::SE3d::exp(dx) * current_pose;
 
     if (dx.norm() < config.convergence_criterion || i == (config.max_iterations - 1)) {
@@ -733,7 +848,14 @@ Vector3dVector LIO::register_scan(const Vector3dVector& scan, const TimestampVec
           last_registration_diagnostics.coarse_to_fine_used = true;
         }
       }
-      optimized_pose = icp(preproc_result.keypoints, map, fine_initial_guess, config, accel_filter_info, fine_initial_guess);
+      optimized_pose = icp(preproc_result.keypoints,
+                           map,
+                           fine_initial_guess,
+                           config,
+                           accel_filter_info,
+                           fine_initial_guess,
+                           1,
+                           &last_registration_diagnostics);
     } catch (const std::exception&) {
       last_registration_diagnostics.consecutive_registration_failures =
           _consecutive_registration_failures + 1;
@@ -810,6 +932,21 @@ Vector3dVector LIO::register_scan(const Vector3dVector& scan, const TimestampVec
         }
         last_registration_diagnostics.degeneracy_damping_alpha_applied = alpha;
         optimized_pose = lidar_state.pose * Sophus::SE3d::exp(alpha * candidate_delta);
+      }
+    }
+
+    if (config.enable_rover_degeneracy_motion_constraint) {
+      const double condition = last_registration_diagnostics.hessian_condition;
+      if (!std::isfinite(condition) || condition >= config.rover_degeneracy_motion_condition) {
+        last_registration_diagnostics.rover_degeneracy_motion_constraint_applied = true;
+        Eigen::Vector6d rover_delta = (lidar_state.pose.inverse() * optimized_pose).log();
+        rover_delta[0] *= clamp01(config.rover_degeneracy_forward_scale);
+        rover_delta[1] *= clamp01(config.rover_degeneracy_lateral_scale);
+        rover_delta[2] *= clamp01(config.rover_degeneracy_vertical_scale);
+        rover_delta[3] *= clamp01(config.rover_degeneracy_roll_pitch_scale);
+        rover_delta[4] *= clamp01(config.rover_degeneracy_roll_pitch_scale);
+        rover_delta[5] *= clamp01(config.rover_degeneracy_yaw_scale);
+        optimized_pose = lidar_state.pose * Sophus::SE3d::exp(rover_delta);
       }
     }
 

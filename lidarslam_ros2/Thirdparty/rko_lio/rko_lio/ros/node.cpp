@@ -49,60 +49,78 @@ rko_lio::core::ImuControl imu_msg_to_imu_data(const sensor_msgs::msg::Imu& imu_m
 
 namespace rko_lio::core {
 // necessary for serializing the config, including the namespacing
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(LIO::Config,
-                                   deskew,
-                                   max_iterations,
-                                   voxel_size,
-                                   max_points_per_voxel,
-                                   max_range,
-                                   min_range,
-                                   convergence_criterion,
-                                   max_correspondance_distance,
-                                   registration_error_model,
-                                   max_voxel_search_radius,
-                                   plane_fit_neighbors,
-                                   plane_fit_min_neighbors,
-                                   plane_fit_max_distance,
-                                   plane_fit_max_eigenvalue,
-                                   point_to_plane_keypoint_stride,
-                                   coarse_to_fine_registration,
-                                   coarse_voxel_size,
-                                   coarse_max_correspondance_distance,
-                                   coarse_max_iterations,
-                                   enable_imu_pose_prior,
-                                   imu_pose_prior_translation_weight,
-                                   imu_pose_prior_rotation_weight,
-                                   enable_degeneracy_damping,
-                                   degeneracy_damping_condition,
-                                   degeneracy_damping_alpha,
-                                   adaptive_degeneracy_damping,
-                                   degeneracy_damping_min_alpha,
-                                   enable_stationary_hold,
-                                   stationary_angular_velocity_threshold,
-                                   stationary_linear_acceleration_threshold,
-                                   stationary_max_translation_delta,
-                                   stationary_max_rotation_delta,
-                                   enable_vertical_spike_filter,
-                                   max_vertical_update_m,
-                                   max_num_threads,
-                                   initialization_phase,
-                                   max_expected_jerk,
-                                   gravity_magnitude,
-                                   double_downsample,
-                                   min_beta,
-                                   max_scan_delta_sec,
-                                   enable_kidnap_relocalization,
-                                   reset_on_registration_failure,
-                                   recovery_min_failures,
-                                   relocalize_after_scan_gap,
-                                   relocalization_min_correspondences,
-                                   relocalization_min_inlier_ratio,
-                                   relocalization_max_mean_error,
-                                   relocalization_max_correspondance_distance,
-                                   relocalization_yaw_samples,
-                                   relocalization_pose_stride,
-                                   relocalization_min_pose_separation,
-                                   relocalization_max_iterations)
+void to_json(nlohmann::json& j, const LIO::Config& c) {
+  j = {
+      {"deskew", c.deskew},
+      {"max_iterations", c.max_iterations},
+      {"voxel_size", c.voxel_size},
+      {"max_points_per_voxel", c.max_points_per_voxel},
+      {"max_range", c.max_range},
+      {"min_range", c.min_range},
+      {"convergence_criterion", c.convergence_criterion},
+      {"max_correspondance_distance", c.max_correspondance_distance},
+      {"registration_error_model", c.registration_error_model},
+      {"max_voxel_search_radius", c.max_voxel_search_radius},
+      {"plane_fit_neighbors", c.plane_fit_neighbors},
+      {"plane_fit_min_neighbors", c.plane_fit_min_neighbors},
+      {"plane_fit_max_distance", c.plane_fit_max_distance},
+      {"plane_fit_max_eigenvalue", c.plane_fit_max_eigenvalue},
+      {"point_to_plane_keypoint_stride", c.point_to_plane_keypoint_stride},
+      {"coarse_to_fine_registration", c.coarse_to_fine_registration},
+      {"coarse_voxel_size", c.coarse_voxel_size},
+      {"coarse_max_correspondance_distance", c.coarse_max_correspondance_distance},
+      {"coarse_max_iterations", c.coarse_max_iterations},
+      {"enable_imu_pose_prior", c.enable_imu_pose_prior},
+      {"imu_pose_prior_translation_weight", c.imu_pose_prior_translation_weight},
+      {"imu_pose_prior_rotation_weight", c.imu_pose_prior_rotation_weight},
+      {"enable_adaptive_imu_pose_prior", c.enable_adaptive_imu_pose_prior},
+      {"adaptive_imu_pose_prior_condition", c.adaptive_imu_pose_prior_condition},
+      {"adaptive_imu_pose_prior_max_condition_ratio", c.adaptive_imu_pose_prior_max_condition_ratio},
+      {"adaptive_imu_pose_prior_max_translation_weight", c.adaptive_imu_pose_prior_max_translation_weight},
+      {"adaptive_imu_pose_prior_max_rotation_weight", c.adaptive_imu_pose_prior_max_rotation_weight},
+      {"enable_degeneracy_damping", c.enable_degeneracy_damping},
+      {"degeneracy_damping_condition", c.degeneracy_damping_condition},
+      {"degeneracy_damping_alpha", c.degeneracy_damping_alpha},
+      {"adaptive_degeneracy_damping", c.adaptive_degeneracy_damping},
+      {"degeneracy_damping_min_alpha", c.degeneracy_damping_min_alpha},
+      {"enable_eigen_degeneracy_projection", c.enable_eigen_degeneracy_projection},
+      {"eigen_degeneracy_projection_condition", c.eigen_degeneracy_projection_condition},
+      {"eigen_degeneracy_projection_min_scale", c.eigen_degeneracy_projection_min_scale},
+      {"enable_stationary_hold", c.enable_stationary_hold},
+      {"stationary_angular_velocity_threshold", c.stationary_angular_velocity_threshold},
+      {"stationary_linear_acceleration_threshold", c.stationary_linear_acceleration_threshold},
+      {"stationary_max_translation_delta", c.stationary_max_translation_delta},
+      {"stationary_max_rotation_delta", c.stationary_max_rotation_delta},
+      {"enable_vertical_spike_filter", c.enable_vertical_spike_filter},
+      {"max_vertical_update_m", c.max_vertical_update_m},
+      {"enable_rover_degeneracy_motion_constraint", c.enable_rover_degeneracy_motion_constraint},
+      {"rover_degeneracy_motion_condition", c.rover_degeneracy_motion_condition},
+      {"rover_degeneracy_forward_scale", c.rover_degeneracy_forward_scale},
+      {"rover_degeneracy_lateral_scale", c.rover_degeneracy_lateral_scale},
+      {"rover_degeneracy_vertical_scale", c.rover_degeneracy_vertical_scale},
+      {"rover_degeneracy_roll_pitch_scale", c.rover_degeneracy_roll_pitch_scale},
+      {"rover_degeneracy_yaw_scale", c.rover_degeneracy_yaw_scale},
+      {"max_num_threads", c.max_num_threads},
+      {"initialization_phase", c.initialization_phase},
+      {"max_expected_jerk", c.max_expected_jerk},
+      {"gravity_magnitude", c.gravity_magnitude},
+      {"double_downsample", c.double_downsample},
+      {"min_beta", c.min_beta},
+      {"max_scan_delta_sec", c.max_scan_delta_sec},
+      {"enable_kidnap_relocalization", c.enable_kidnap_relocalization},
+      {"reset_on_registration_failure", c.reset_on_registration_failure},
+      {"recovery_min_failures", c.recovery_min_failures},
+      {"relocalize_after_scan_gap", c.relocalize_after_scan_gap},
+      {"relocalization_min_correspondences", c.relocalization_min_correspondences},
+      {"relocalization_min_inlier_ratio", c.relocalization_min_inlier_ratio},
+      {"relocalization_max_mean_error", c.relocalization_max_mean_error},
+      {"relocalization_max_correspondance_distance", c.relocalization_max_correspondance_distance},
+      {"relocalization_yaw_samples", c.relocalization_yaw_samples},
+      {"relocalization_pose_stride", c.relocalization_pose_stride},
+      {"relocalization_min_pose_separation", c.relocalization_min_pose_separation},
+      {"relocalization_max_iterations", c.relocalization_max_iterations},
+  };
+}
 } // namespace rko_lio::core
 
 namespace rko_lio::ros {
@@ -219,6 +237,20 @@ Node::Node(const std::string& node_name, const rclcpp::NodeOptions& options) {
       node->declare_parameter<double>("imu_pose_prior_translation_weight", lio_config.imu_pose_prior_translation_weight);
   lio_config.imu_pose_prior_rotation_weight =
       node->declare_parameter<double>("imu_pose_prior_rotation_weight", lio_config.imu_pose_prior_rotation_weight);
+  lio_config.enable_adaptive_imu_pose_prior =
+      node->declare_parameter<bool>("enable_adaptive_imu_pose_prior", lio_config.enable_adaptive_imu_pose_prior);
+  lio_config.adaptive_imu_pose_prior_condition =
+      node->declare_parameter<double>("adaptive_imu_pose_prior_condition",
+                                      lio_config.adaptive_imu_pose_prior_condition);
+  lio_config.adaptive_imu_pose_prior_max_condition_ratio =
+      node->declare_parameter<double>("adaptive_imu_pose_prior_max_condition_ratio",
+                                      lio_config.adaptive_imu_pose_prior_max_condition_ratio);
+  lio_config.adaptive_imu_pose_prior_max_translation_weight =
+      node->declare_parameter<double>("adaptive_imu_pose_prior_max_translation_weight",
+                                      lio_config.adaptive_imu_pose_prior_max_translation_weight);
+  lio_config.adaptive_imu_pose_prior_max_rotation_weight =
+      node->declare_parameter<double>("adaptive_imu_pose_prior_max_rotation_weight",
+                                      lio_config.adaptive_imu_pose_prior_max_rotation_weight);
   lio_config.enable_degeneracy_damping =
       node->declare_parameter<bool>("enable_degeneracy_damping", lio_config.enable_degeneracy_damping);
   lio_config.degeneracy_damping_condition =
@@ -229,6 +261,15 @@ Node::Node(const std::string& node_name, const rclcpp::NodeOptions& options) {
       node->declare_parameter<bool>("adaptive_degeneracy_damping", lio_config.adaptive_degeneracy_damping);
   lio_config.degeneracy_damping_min_alpha =
       node->declare_parameter<double>("degeneracy_damping_min_alpha", lio_config.degeneracy_damping_min_alpha);
+  lio_config.enable_eigen_degeneracy_projection =
+      node->declare_parameter<bool>("enable_eigen_degeneracy_projection",
+                                    lio_config.enable_eigen_degeneracy_projection);
+  lio_config.eigen_degeneracy_projection_condition =
+      node->declare_parameter<double>("eigen_degeneracy_projection_condition",
+                                      lio_config.eigen_degeneracy_projection_condition);
+  lio_config.eigen_degeneracy_projection_min_scale =
+      node->declare_parameter<double>("eigen_degeneracy_projection_min_scale",
+                                      lio_config.eigen_degeneracy_projection_min_scale);
   lio_config.enable_stationary_hold =
       node->declare_parameter<bool>("enable_stationary_hold", lio_config.enable_stationary_hold);
   lio_config.stationary_angular_velocity_threshold =
@@ -245,6 +286,23 @@ Node::Node(const std::string& node_name, const rclcpp::NodeOptions& options) {
       node->declare_parameter<bool>("enable_vertical_spike_filter", lio_config.enable_vertical_spike_filter);
   lio_config.max_vertical_update_m =
       node->declare_parameter<double>("max_vertical_update_m", lio_config.max_vertical_update_m);
+  lio_config.enable_rover_degeneracy_motion_constraint =
+      node->declare_parameter<bool>("enable_rover_degeneracy_motion_constraint",
+                                    lio_config.enable_rover_degeneracy_motion_constraint);
+  lio_config.rover_degeneracy_motion_condition =
+      node->declare_parameter<double>("rover_degeneracy_motion_condition",
+                                      lio_config.rover_degeneracy_motion_condition);
+  lio_config.rover_degeneracy_forward_scale =
+      node->declare_parameter<double>("rover_degeneracy_forward_scale", lio_config.rover_degeneracy_forward_scale);
+  lio_config.rover_degeneracy_lateral_scale =
+      node->declare_parameter<double>("rover_degeneracy_lateral_scale", lio_config.rover_degeneracy_lateral_scale);
+  lio_config.rover_degeneracy_vertical_scale =
+      node->declare_parameter<double>("rover_degeneracy_vertical_scale", lio_config.rover_degeneracy_vertical_scale);
+  lio_config.rover_degeneracy_roll_pitch_scale =
+      node->declare_parameter<double>("rover_degeneracy_roll_pitch_scale",
+                                      lio_config.rover_degeneracy_roll_pitch_scale);
+  lio_config.rover_degeneracy_yaw_scale =
+      node->declare_parameter<double>("rover_degeneracy_yaw_scale", lio_config.rover_degeneracy_yaw_scale);
   lio_config.max_num_threads =
       static_cast<int>(node->declare_parameter<int>("max_num_threads", lio_config.max_num_threads));
   lio_config.initialization_phase =
@@ -587,6 +645,10 @@ void Node::publish_registration_metrics(const core::LIO::RegistrationDiagnostics
       static_cast<float>(diagnostics.consecutive_registration_failures),
       diagnostics.coarse_to_fine_used ? 1.0f : 0.0f,
       static_cast<float>(diagnostics.degeneracy_damping_alpha_applied),
+      static_cast<float>(diagnostics.eigen_degeneracy_min_scale_applied),
+      static_cast<float>(diagnostics.adaptive_imu_pose_prior_translation_weight_applied),
+      static_cast<float>(diagnostics.adaptive_imu_pose_prior_rotation_weight_applied),
+      diagnostics.rover_degeneracy_motion_constraint_applied ? 1.0f : 0.0f,
   };
   registration_diagnostics_publisher->publish(msg);
 }

@@ -49,6 +49,15 @@ ament_target_dependencies(seyond_cloud_time_adapter
   sensor_msgs
 )
 
+add_executable(odometry_to_tf src/odometry_to_tf.cpp)
+target_compile_features(odometry_to_tf PUBLIC cxx_std_17)
+ament_target_dependencies(odometry_to_tf
+  geometry_msgs
+  nav_msgs
+  rclcpp
+  tf2_ros
+)
+
 install(DIRECTORY config launch rviz
   DESTINATION share/${PROJECT_NAME}
 )
@@ -63,6 +72,7 @@ install(TARGETS
   occupancy_grid_to_points
   local_hazard_grid
   seyond_cloud_time_adapter
+  odometry_to_tf
   DESTINATION lib/${PROJECT_NAME}
 )
 

@@ -28,6 +28,10 @@ REG_FIELDS = (
     "registration_failures",
     "coarse_to_fine",
     "damping_alpha",
+    "eigen_projection_min_scale",
+    "adaptive_prior_translation_weight",
+    "adaptive_prior_rotation_weight",
+    "rover_motion_constraint",
 )
 
 RUNTIME_FIELDS = (
@@ -238,6 +242,10 @@ class RkoDiagnosticsMonitor(Node):
             f"fail={reg.get('registration_failures', math.nan):.0f} "
             f"coarse={fmt_bool(reg.get('coarse_to_fine', 0.0))} "
             f"damp={reg.get('damping_alpha', math.nan):.2f} "
+            f"eig={reg.get('eigen_projection_min_scale', math.nan):.2f} "
+            f"prior_t={reg.get('adaptive_prior_translation_weight', math.nan):.3f} "
+            f"prior_r={reg.get('adaptive_prior_rotation_weight', math.nan):.2f} "
+            f"rover={fmt_bool(reg.get('rover_motion_constraint', 0.0))} "
             f"msg_age={reg_age:.1f}s",
             flush=True,
         )

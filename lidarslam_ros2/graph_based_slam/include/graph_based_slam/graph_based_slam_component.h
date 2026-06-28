@@ -414,6 +414,7 @@ private:
     double map_to_odom_tf_future_offset_sec_ {0.0};
     double modified_map_publish_period_sec_ {0.0};
     double modified_map_leaf_size_ {0.0};
+    bool odom_input_cloud_in_odom_frame_ {false};
     std::string global_frame_id_ {"map"};
     std::string odom_frame_id_ {"odom"};
     Eigen::Isometry3d map_to_odom_ {Eigen::Isometry3d::Identity()};
