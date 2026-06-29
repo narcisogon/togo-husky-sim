@@ -1,0 +1,167 @@
+dlio_odom_node:
+  ros__parameters:
+    use_sim_time: true
+
+    # Frames and topics used by the DLIO frontend.
+    frames/odom: odom
+    frames/baselink: base_link
+    frames/lidar: seyond_robin_w_lidar_frame
+    frames/imu: seyond_robin_w_imu_frame
+    odom/odom_frame: odom
+
+    # Frontend point processing.
+    pointcloud/deskew: true
+    pointcloud/voxelize: true
+    map/waitUntilMove: false
+    map/dense/filtered: false
+    map/sparse/leafSize: 0.25
+    odom/preprocessing/cropBoxFilter/size: 1.0
+    odom/preprocessing/voxelFilter/res: 0.25
+
+    # Sim IMU setup. Gazebo is currently Earth gravity.
+    imu/calibration: true
+    odom/imu/calibration/gyro: true
+    odom/imu/calibration/accel: true
+    odom/imu/calibration/time: 3.0
+    odom/imu/approximateGravity: false
+    odom/imu/bufferSize: 5000
+    odom/gravity: 9.80665
+    odom/computeTimeOffset: false
+
+    # base_link -> sensor extrinsics.
+    extrinsics/baselink2imu/t: [0.45, -0.05, 0.50]
+    extrinsics/baselink2imu/R: [1.0, 0.0, 0.0,
+                                0.0, 1.0, 0.0,
+                                0.0, 0.0, 1.0]
+    extrinsics/baselink2lidar/t: [0.30, 0.0, 0.42]
+    extrinsics/baselink2lidar/R: [1.0, 0.0, 0.0,
+                                  0.0, 1.0, 0.0,
+                                  0.0, 0.0, 1.0]
+
+    # Keyframes/submap. Rotation-only keyframes are supported in code now, so
+    # this yaw threshold also controls how densely turning views are added.
+    odom/keyframe/threshD: 0.5
+    odom/keyframe/threshR: 20.0
+    odom/submap/keyframe/knn: 10
+    odom/submap/keyframe/kcv: 10
+    odom/submap/keyframe/kcc: 10
+
+    # DLIO scan-to-map GICP.
+    odom/gicp/minNumPoints: 64
+    odom/gicp/kCorrespondences: 16
+    odom/gicp/maxCorrespondenceDistance: 1.0
+    odom/gicp/maxIterations: 48
+    odom/gicp/transformationEpsilon: 0.005
+    odom/gicp/rotationEpsilon: 0.005
+    odom/gicp/initLambdaFactor: 1e-9
+
+    # Soft gates for featureless / high-yaw-rate moments. Bad GICP jumps are
+    # rejected; during spin guard the frontend advances from the IMU prior
+    # instead of letting a bad scan match pull the map sideways.
+    odom/gicp/rejectBadCorrections: true
+    odom/gicp/spinProtection/enabled: false
+    odom/gicp/timingProtection/enabled: false
+    odom/gicp/timingProtection/dropStaleScans: false
+    odom/gicp/freezeOnBadCorrection: false
+
+    # Diagnostic guard values stay explicit for quick experiments.
+    odom/gicp/maxCorrectionTranslation: 0.35
+    odom/gicp/maxCorrectionRotationDeg: 18.0
+    odom/gicp/spinProtection/angularRate: 0.30
+    odom/gicp/spinProtection/maxCorrectionTranslation: 0.03
+    odom/gicp/spinProtection/recoveryTranslationStep: 0.006
+    odom/gicp/spinProtection/recoveryRotationStepDeg: 6.0
+    odom/gicp/spinProtection/useImuPriorOnReject: true
+    odom/gicp/timingProtection/imuAgeMs: 140.0
+    odom/gicp/timingProtection/maxCorrectionTranslation: 0.10
+    odom/gicp/timingProtection/maxCorrectionRotationDeg: 10.0
+    odom/gicp/timingProtection/recoveryTranslationStep: 0.008
+    odom/gicp/timingProtection/recoveryRotationStepDeg: 2.0
+    odom/gicp/timingProtection/dropImuAgeMs: 220.0
+    odom/gicp/timingProtection/dropRejectStreak: 0
+    odom/gicp/timingProtection/maxIterations: 20
+    odom/gicp/badCorrectionFreezeStreak: 3
+    odom/gicp/badCorrectionRecoveryTranslationStep: 0.04
+    odom/gicp/badCorrectionRecoveryRotationStepDeg: 3.0
+
+dlio_map_node:
+  ros__parameters:
+    use_sim_time: true
+    odom/odom_frame: odom
+    map/sparse/leafSize: 0.25
+
+graph_based_slam:
+  ros__parameters:
+    use_sim_time: true
+    use_odom_input: true
+    global_frame_id: map
+    odom_frame_id: odom
+    publish_map_to_odom_tf: true
+    map_to_odom_tf_future_offset_sec: 0.35
+    modified_map_publish_period_sec: 1.0
+    modified_map_leaf_size: 0.15
+    # Debug/visualization cloud with per-point fields:
+    #   time: newest contributing submap stamp in seconds
+    #   submap_index: backend submap id
+    # Keep this separate from /modified_map so Nav2 and existing displays keep
+    # receiving ordinary PointXYZI.
+    publish_modified_map_timed: true
+    modified_map_timed_leaf_size: 0.15
+    map_save_dir: /ws/src/lidarslam_ros2/output/husky_seyond_graph
+
+    # Backend cloud registration for loop closures / constraints.
+    registration_method: NDT
+    ndt_resolution: 5.0
+    ndt_num_threads: 0
+    voxel_leaf_size: 0.2
+
+    # Loop closure and graph constraints.
+    loop_detection_period: 1000
+    threshold_loop_closure_score: 15.0
+    scan_context_loop_closure_score_threshold: -1.0
+    distance_loop_closure: 15.0
+    range_of_searching_loop_closure: 50.0
+    search_submap_num: 5
+    submap_distance_threshold: 0.1
+    num_adjacent_pose_cnstraints: 5
+    max_loop_candidate_count: 3
+    loop_edge_dedup_index_window: 20
+    loop_max_translation_delta: 15.0
+    loop_max_rotation_delta_deg: 45.0
+    loop_max_translation_delta_descriptor: -1.0
+    loop_max_rotation_delta_deg_descriptor: -1.0
+    adjacent_edge_info_weight: 1000.0
+    loop_edge_info_weight: 200.0
+    loop_edge_robust_kernel_delta: 1.0
+
+    # Descriptors. Scan Context is the active default; heavier descriptors are
+    # left off until we need them for a specific terrain.
+    use_scan_context: true
+    scan_context_threshold: 0.45
+    use_bev_descriptor: false
+    use_solid_descriptor: false
+    use_triangle_descriptor: false
+    prefer_scan_context_candidates: true
+    use_3d_bbs_for_scan_context: false
+    use_dynamic_object_filter: false
+    use_pcd_cache: true
+    use_save_map_in_loop: true
+    debug_flag: true
+
+reference_path_publisher:
+  ros__parameters:
+    use_sim_time: true
+    pose_topic: /gazebo/dynamic_pose
+    frontend_odom_topic: /dlio/odometry
+    path_topic: /reference/path
+    fixed_frame: map
+    # Align Gazebo truth once to the frontend's initial pose/yaw so the path is
+    # visually comparable in RViz, but do not keep following frontend corrections.
+    align_to_frontend: true
+    zero_start: true
+    model_names: a300-0000,a300_0000,a300,robot,base_link,chassis_link
+    fallback_transform_index: 0
+    allow_fallback_entity: true
+    min_distance_m: 0.02
+    max_poses: 12000
+    extra_yaw_offset_deg: 0.0

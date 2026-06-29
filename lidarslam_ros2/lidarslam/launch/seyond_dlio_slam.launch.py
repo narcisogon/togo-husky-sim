@@ -135,14 +135,7 @@ def generate_launch_description():
             'python3', '/ws/src/lidarslam_ros2/scripts/togo/gazebo_pose_to_aligned_path.py',
             '--ros-args',
             '-r', '__node:=reference_path_publisher',
-            '-p', 'pose_topic:=/gazebo/dynamic_pose',
-            '-p', 'frontend_odom_topic:=/dlio/odometry',
-            '-p', 'path_topic:=/reference/path',
-            '-p', 'model_names:=a300-0000,a300_0000,a300,robot,base_link,chassis_link',
-            '-p', 'fixed_frame:=odom',
-            '-p', 'max_poses:=12000',
-            '-p', 'min_distance_m:=0.02',
-            '-p', 'extra_yaw_offset_deg:=0.0',
+            '--params-file', dlio_param_file,
         ],
         output='screen',
     )
@@ -187,12 +180,12 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument(
             'slam_param_file',
-            default_value='/ws/src/lidarslam_ros2/lidarslam/param/seyond_live_slam.yaml',
+            default_value='/ws/src/lidarslam_ros2/lidarslam/param/seyond_dlio_graph.yaml',
             description='Backend graph SLAM parameters.',
         ),
         DeclareLaunchArgument(
             'dlio_param_file',
-            default_value='/ws/src/lidarslam_ros2/direct_lidar_inertial_odometry/cfg/seyond_robin_w_dlio.yaml',
+            default_value='/ws/src/lidarslam_ros2/lidarslam/param/seyond_dlio_graph.yaml',
             description='Seyond DLIO frontend override parameters.',
         ),
         DeclareLaunchArgument('use_sim_time', default_value='true'),

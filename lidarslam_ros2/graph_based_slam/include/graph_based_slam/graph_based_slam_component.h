@@ -147,6 +147,7 @@ private:
     rclcpp::Publisher < lidarslam_msgs::msg::MapArray > ::SharedPtr modified_map_array_pub_;
     rclcpp::Publisher < nav_msgs::msg::Path > ::SharedPtr modified_path_pub_;
     rclcpp::Publisher < sensor_msgs::msg::PointCloud2 > ::SharedPtr modified_map_pub_;
+    rclcpp::Publisher < sensor_msgs::msg::PointCloud2 > ::SharedPtr modified_map_timed_pub_;
     rclcpp::TimerBase::SharedPtr loop_detect_timer_;
     rclcpp::TimerBase::SharedPtr modified_map_publish_timer_;
     rclcpp::Service < std_srvs::srv::Empty > ::SharedPtr map_save_srv_;
@@ -414,6 +415,8 @@ private:
     double map_to_odom_tf_future_offset_sec_ {0.0};
     double modified_map_publish_period_sec_ {0.0};
     double modified_map_leaf_size_ {0.0};
+    bool publish_modified_map_timed_ {false};
+    double modified_map_timed_leaf_size_ {-1.0};
     bool odom_input_cloud_in_odom_frame_ {false};
     std::string global_frame_id_ {"map"};
     std::string odom_frame_id_ {"odom"};

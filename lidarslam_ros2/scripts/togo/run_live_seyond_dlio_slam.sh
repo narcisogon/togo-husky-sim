@@ -6,8 +6,9 @@ source /ws/install/setup.bash
 set -u
 
 LAUNCH_FILE=/ws/src/lidarslam_ros2/lidarslam/launch/seyond_dlio_slam.launch.py
-SLAM_PARAM_FILE=${SLAM_PARAM_FILE:-/ws/src/lidarslam_ros2/lidarslam/param/seyond_live_slam.yaml}
-DLIO_PARAM_FILE=${DLIO_PARAM_FILE:-/ws/src/lidarslam_ros2/direct_lidar_inertial_odometry/cfg/seyond_robin_w_dlio.yaml}
+COMBINED_PARAM_FILE=${COMBINED_PARAM_FILE:-/ws/src/lidarslam_ros2/lidarslam/param/seyond_dlio_graph.yaml}
+SLAM_PARAM_FILE=${SLAM_PARAM_FILE:-$COMBINED_PARAM_FILE}
+DLIO_PARAM_FILE=${DLIO_PARAM_FILE:-$COMBINED_PARAM_FILE}
 ENABLE_MAP_SAVE_PULSE=${ENABLE_MAP_SAVE_PULSE:-false}
 SLAM_RVIZ=${SLAM_RVIZ:-true}
 TIMED_CLOUD_SCAN_PERIOD=${TIMED_CLOUD_SCAN_PERIOD:-0.0666666667}

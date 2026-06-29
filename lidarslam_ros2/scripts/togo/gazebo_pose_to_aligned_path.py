@@ -33,10 +33,12 @@ class GazeboPoseToAlignedPath(Node):
     def __init__(self) -> None:
         super().__init__('gazebo_pose_to_aligned_path')
         self.declare_parameter('pose_topic', '/gazebo/dynamic_pose')
-        self.declare_parameter('frontend_odom_topic', '/rko_lio/odometry')
+        self.declare_parameter('frontend_odom_topic', '/dlio/odometry')
         self.declare_parameter('path_topic', '/reference/path')
         self.declare_parameter('model_names', 'a300-0000,a300_0000,a300,robot,base_link,chassis_link')
-        self.declare_parameter('fixed_frame', 'odom')
+        self.declare_parameter('fixed_frame', 'map')
+        self.declare_parameter('align_to_frontend', False)
+        self.declare_parameter('zero_start', True)
         self.declare_parameter('max_poses', 12000)
         self.declare_parameter('min_distance_m', 0.02)
         self.declare_parameter('extra_yaw_offset_deg', 0.0)
@@ -50,6 +52,8 @@ class GazeboPoseToAlignedPath(Node):
         self.path_topic = str(self.get_parameter('path_topic').value)
         self.model_names = [x.strip().lower() for x in str(self.get_parameter('model_names').value).split(',') if x.strip()]
         self.fixed_frame = str(self.get_parameter('fixed_frame').value)
+        self.align_to_frontend = bool(self.get_parameter('align_to_frontend').value)
+        self.zero_start = bool(self.get_parameter('zero_start').value)
         self.max_poses = int(self.get_parameter('max_poses').value)
         self.min_distance_m = float(self.get_parameter('min_distance_m').value)
         self.extra_yaw_offset = math.radians(float(self.get_parameter('extra_yaw_offset_deg').value))
@@ -59,7 +63,9 @@ class GazeboPoseToAlignedPath(Node):
         republish_rate_hz = float(self.get_parameter('republish_rate_hz').value)
 
         qos = QoSProfile(history=HistoryPolicy.KEEP_LAST, depth=100, reliability=ReliabilityPolicy.BEST_EFFORT)
-        self.frontend_sub = self.create_subscription(Odometry, frontend_odom_topic, self.on_frontend, qos)
+        self.frontend_sub = None
+        if self.align_to_frontend:
+            self.frontend_sub = self.create_subscription(Odometry, frontend_odom_topic, self.on_frontend, qos)
         self.pose_sub = self.create_subscription(TFMessage, self.pose_topic, self.on_pose_msg, 100)
         self.publisher = self.create_publisher(Path, self.path_topic, 10)
         self.status_timer = self.create_timer(2.0, self.log_status)
@@ -79,7 +85,9 @@ class GazeboPoseToAlignedPath(Node):
         self.fallback_warned = False
         self.pending_model_key: str | None = None
         self.get_logger().info(
-            f'Publishing {self.path_topic} from Gazebo pose topic {self.pose_topic}; candidates={self.model_names}'
+            f'Publishing {self.path_topic} from Gazebo pose topic {self.pose_topic}; '
+            f'frame={self.fixed_frame}; align_to_frontend={self.align_to_frontend}; '
+            f'zero_start={self.zero_start}; candidates={self.model_names}'
         )
 
     def on_frontend(self, msg: Odometry) -> None:
@@ -98,9 +106,11 @@ class GazeboPoseToAlignedPath(Node):
             self.model_key = self.pending_model_key or self.transform_key(transform)
             self.get_logger().info(f'Using Gazebo pose entity: {self.model_key}')
             self.try_init_alignment()
-        if self.front0 is None or self.gz0 is None:
+        if self.gz0 is None:
             return
-        self.publish_aligned(transform)
+        if self.align_to_frontend and self.front0 is None:
+            return
+        self.publish_reference(transform)
 
     def transform_key(self, transform: TransformStamped, index: int | None = None) -> str:
         if transform.child_frame_id:
@@ -172,23 +182,39 @@ class GazeboPoseToAlignedPath(Node):
         return None
 
     def try_init_alignment(self) -> None:
-        if self.front0 is None or self.gz0 is None:
+        if not self.align_to_frontend or self.front0 is None or self.gz0 is None:
             return
         gz_pose = self.gz0.transform
         self.yaw_delta = yaw_from_quat(self.front0.orientation) - yaw_from_quat(gz_pose.rotation) + self.extra_yaw_offset
         self.get_logger().info(f'Aligned Gazebo truth path with yaw offset {math.degrees(self.yaw_delta):.2f} deg')
 
-    def publish_aligned(self, transform: TransformStamped) -> None:
+    def publish_reference(self, transform: TransformStamped) -> None:
         gz_start = self.gz0.transform
         gz_now = transform.transform
-        dx = gz_now.translation.x - gz_start.translation.x
-        dy = gz_now.translation.y - gz_start.translation.y
-        dz = gz_now.translation.z - gz_start.translation.z
-        c = math.cos(self.yaw_delta)
-        s = math.sin(self.yaw_delta)
-        x = self.front0.position.x + c * dx - s * dy
-        y = self.front0.position.y + s * dx + c * dy
-        z = self.front0.position.z + dz
+        if self.zero_start or self.align_to_frontend:
+            dx = gz_now.translation.x - gz_start.translation.x
+            dy = gz_now.translation.y - gz_start.translation.y
+            dz = gz_now.translation.z - gz_start.translation.z
+            yaw = yaw_from_quat(gz_now.rotation) - yaw_from_quat(gz_start.rotation)
+        else:
+            dx = gz_now.translation.x
+            dy = gz_now.translation.y
+            dz = gz_now.translation.z
+            yaw = yaw_from_quat(gz_now.rotation)
+
+        if self.align_to_frontend:
+            c = math.cos(self.yaw_delta)
+            s = math.sin(self.yaw_delta)
+            x = self.front0.position.x + c * dx - s * dy
+            y = self.front0.position.y + s * dx + c * dy
+            z = self.front0.position.z + dz
+            yaw += self.yaw_delta
+        else:
+            x = dx
+            y = dy
+            z = dz
+            yaw += self.extra_yaw_offset
+
         if self.last_xy is not None and math.hypot(x - self.last_xy[0], y - self.last_xy[1]) < self.min_distance_m:
             self.republish_path()
             return
@@ -200,7 +226,7 @@ class GazeboPoseToAlignedPath(Node):
         pose.pose.position.x = x
         pose.pose.position.y = y
         pose.pose.position.z = z
-        pose.pose.orientation = quat_from_yaw(yaw_from_quat(gz_now.rotation) + self.yaw_delta)
+        pose.pose.orientation = quat_from_yaw(yaw)
         self.poses.append(pose)
         self.publish_path(transform.header.stamp)
 
@@ -219,7 +245,7 @@ class GazeboPoseToAlignedPath(Node):
             self.publisher.publish(self.last_path)
 
     def log_status(self) -> None:
-        if self.front0 is None:
+        if self.align_to_frontend and self.front0 is None:
             self.get_logger().warn(f'Waiting for frontend odometry; msgs_seen={self.frontend_msgs_seen}')
         if self.gz0 is None:
             self.get_logger().warn(

@@ -32,15 +32,19 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
+#include <limits>
 #include <unordered_map>
+#include <vector>
 
 #include "graph_based_slam/adjacent_edge_auto_scale.hpp"
 #include "graph_based_slam/bev_mutual_visibility.hpp"
 #include "graph_based_slam/dynamic_object_filter.hpp"
 #include "g2o/core/robust_kernel_impl.h"
+#include <std_msgs/msg/header.hpp>
 #define GRAPH_BASED_SLAM_WITH_G2O 1
 #include "graph_based_slam/loop_edge_robustifier.hpp"
 
@@ -48,6 +52,158 @@ using namespace std::chrono_literals;
 
 namespace graphslam
 {
+namespace
+{
+struct TimedMapPoint
+{
+  float x {0.0F};
+  float y {0.0F};
+  float z {0.0F};
+  float intensity {0.0F};
+  float time {0.0F};
+  uint32_t submap_index {0U};
+};
+
+struct TimedVoxelKey
+{
+  int ix {0};
+  int iy {0};
+  int iz {0};
+
+  bool operator==(const TimedVoxelKey & other) const
+  {
+    return ix == other.ix && iy == other.iy && iz == other.iz;
+  }
+};
+
+struct TimedVoxelKeyHash
+{
+  std::size_t operator()(const TimedVoxelKey & key) const
+  {
+    std::size_t h = static_cast<std::size_t>(key.ix) * 73856093U;
+    h ^= static_cast<std::size_t>(key.iy) * 19349663U;
+    h ^= static_cast<std::size_t>(key.iz) * 83492791U;
+    return h;
+  }
+};
+
+struct TimedVoxelAccumulator
+{
+  double x {0.0};
+  double y {0.0};
+  double z {0.0};
+  double intensity {0.0};
+  float newest_time {-std::numeric_limits<float>::infinity()};
+  uint32_t newest_submap_index {0U};
+  int count {0};
+
+  void add(const pcl::PointXYZI & point, float time, uint32_t submap_index)
+  {
+    x += point.x;
+    y += point.y;
+    z += point.z;
+    intensity += point.intensity;
+    if (time >= newest_time) {
+      newest_time = time;
+      newest_submap_index = submap_index;
+    }
+    ++count;
+  }
+
+  TimedMapPoint centroid() const
+  {
+    TimedMapPoint point;
+    const double inv_count = count > 0 ? 1.0 / static_cast<double>(count) : 0.0;
+    point.x = static_cast<float>(x * inv_count);
+    point.y = static_cast<float>(y * inv_count);
+    point.z = static_cast<float>(z * inv_count);
+    point.intensity = static_cast<float>(intensity * inv_count);
+    point.time = newest_time;
+    point.submap_index = newest_submap_index;
+    return point;
+  }
+};
+
+std::vector<TimedMapPoint> voxelizeTimedPoints(
+  const std::vector<TimedMapPoint> & points,
+  double leaf_size)
+{
+  if (leaf_size <= 0.0) {
+    return points;
+  }
+
+  std::unordered_map<TimedVoxelKey, TimedVoxelAccumulator, TimedVoxelKeyHash> voxels;
+  voxels.reserve(points.size());
+  for (const auto & point : points) {
+    TimedVoxelKey key;
+    key.ix = static_cast<int>(std::floor(point.x / leaf_size));
+    key.iy = static_cast<int>(std::floor(point.y / leaf_size));
+    key.iz = static_cast<int>(std::floor(point.z / leaf_size));
+
+    pcl::PointXYZI pcl_point;
+    pcl_point.x = point.x;
+    pcl_point.y = point.y;
+    pcl_point.z = point.z;
+    pcl_point.intensity = point.intensity;
+    voxels[key].add(pcl_point, point.time, point.submap_index);
+  }
+
+  std::vector<TimedMapPoint> voxelized;
+  voxelized.reserve(voxels.size());
+  for (const auto & item : voxels) {
+    voxelized.push_back(item.second.centroid());
+  }
+  return voxelized;
+}
+
+void writePointCloud2Field(
+  sensor_msgs::msg::PointCloud2 & msg,
+  const std::string & name,
+  uint32_t offset,
+  uint8_t datatype)
+{
+  sensor_msgs::msg::PointField field;
+  field.name = name;
+  field.offset = offset;
+  field.datatype = datatype;
+  field.count = 1;
+  msg.fields.push_back(field);
+}
+
+sensor_msgs::msg::PointCloud2 makeTimedPointCloud2(
+  const std::vector<TimedMapPoint> & points,
+  const std_msgs::msg::Header & header)
+{
+  sensor_msgs::msg::PointCloud2 msg;
+  msg.header = header;
+  msg.height = 1;
+  msg.width = static_cast<uint32_t>(points.size());
+  msg.is_bigendian = false;
+  msg.is_dense = true;
+  msg.point_step = 24;
+  msg.row_step = msg.point_step * msg.width;
+  writePointCloud2Field(msg, "x", 0, sensor_msgs::msg::PointField::FLOAT32);
+  writePointCloud2Field(msg, "y", 4, sensor_msgs::msg::PointField::FLOAT32);
+  writePointCloud2Field(msg, "z", 8, sensor_msgs::msg::PointField::FLOAT32);
+  writePointCloud2Field(msg, "intensity", 12, sensor_msgs::msg::PointField::FLOAT32);
+  writePointCloud2Field(msg, "time", 16, sensor_msgs::msg::PointField::FLOAT32);
+  writePointCloud2Field(msg, "submap_index", 20, sensor_msgs::msg::PointField::UINT32);
+  msg.data.resize(static_cast<std::size_t>(msg.row_step));
+
+  for (std::size_t i = 0; i < points.size(); ++i) {
+    const auto & point = points[i];
+    uint8_t * dst = msg.data.data() + i * msg.point_step;
+    std::memcpy(dst + 0, &point.x, sizeof(float));
+    std::memcpy(dst + 4, &point.y, sizeof(float));
+    std::memcpy(dst + 8, &point.z, sizeof(float));
+    std::memcpy(dst + 12, &point.intensity, sizeof(float));
+    std::memcpy(dst + 16, &point.time, sizeof(float));
+    std::memcpy(dst + 20, &point.submap_index, sizeof(uint32_t));
+  }
+  return msg;
+}
+}  // namespace
+
 GraphBasedSlamComponent::GraphBasedSlamComponent(const rclcpp::NodeOptions & options)
 : Node("graph_based_slam", options),
   clock_(RCL_ROS_TIME),
@@ -1022,6 +1178,10 @@ GraphBasedSlamComponent::GraphBasedSlamComponent(const rclcpp::NodeOptions & opt
   get_parameter("modified_map_publish_period_sec", modified_map_publish_period_sec_);
   declare_parameter("modified_map_leaf_size", 0.0);
   get_parameter("modified_map_leaf_size", modified_map_leaf_size_);
+  declare_parameter("publish_modified_map_timed", true);
+  get_parameter("publish_modified_map_timed", publish_modified_map_timed_);
+  declare_parameter("modified_map_timed_leaf_size", -1.0);
+  get_parameter("modified_map_timed_leaf_size", modified_map_timed_leaf_size_);
   declare_parameter("odom_input_cloud_in_odom_frame", false);
   get_parameter("odom_input_cloud_in_odom_frame", odom_input_cloud_in_odom_frame_);
   declare_parameter("odom_frame_id", std::string("odom"));
@@ -1036,6 +1196,9 @@ GraphBasedSlamComponent::GraphBasedSlamComponent(const rclcpp::NodeOptions & opt
     std::cout << "modified_map_publish_period_sec:" <<
       modified_map_publish_period_sec_ << std::endl;
     std::cout << "modified_map_leaf_size:" << modified_map_leaf_size_ << std::endl;
+    std::cout << "publish_modified_map_timed:" << std::boolalpha <<
+      publish_modified_map_timed_ << std::endl;
+    std::cout << "modified_map_timed_leaf_size:" << modified_map_timed_leaf_size_ << std::endl;
     std::cout << "odom_input_cloud_in_odom_frame:" << std::boolalpha <<
       odom_input_cloud_in_odom_frame_ << std::endl;
     std::cout << "global_frame_id:" << global_frame_id_ << std::endl;
@@ -1158,6 +1321,10 @@ void GraphBasedSlamComponent::initializePubSub()
 
   modified_map_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>(
     "modified_map",
+    rclcpp::QoS(10));
+
+  modified_map_timed_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>(
+    "modified_map_timed",
     rclcpp::QoS(10));
 
   modified_map_array_pub_ = create_publisher<lidarslam_msgs::msg::MapArray>(
@@ -2901,6 +3068,7 @@ void GraphBasedSlamComponent::doPoseAdjustment(
   nav_msgs::msg::Path path;
   path.header.frame_id = global_frame_id_;
   pcl::PointCloud<pcl::PointXYZI>::Ptr map_ptr(new pcl::PointCloud<pcl::PointXYZI>());
+  std::vector<TimedMapPoint> timed_map_points;
   std::vector<TimedSubmapCloud> dynamic_filter_submaps;
   if (do_save_map && use_dynamic_object_filter_) {
     dynamic_filter_submaps.reserve(submaps_size);
@@ -2928,6 +3096,22 @@ void GraphBasedSlamComponent::doPoseAdjustment(
     sensor_msgs::msg::PointCloud2::SharedPtr cloud_msg_ptr(new sensor_msgs::msg::PointCloud2);
     pcl::toROSMsg(*transformed_cloud_ptr, *cloud_msg_ptr);
     *map_ptr += *transformed_cloud_ptr;
+    if (publish_modified_map_timed_) {
+      const float submap_time =
+        static_cast<float>(rclcpp::Time(map_array_msg.submaps[i].header.stamp).seconds());
+      const uint32_t submap_index = static_cast<uint32_t>(std::max(0, i));
+      timed_map_points.reserve(timed_map_points.size() + transformed_cloud_ptr->size());
+      for (const auto & point : transformed_cloud_ptr->points) {
+        TimedMapPoint timed_point;
+        timed_point.x = point.x;
+        timed_point.y = point.y;
+        timed_point.z = point.z;
+        timed_point.intensity = point.intensity;
+        timed_point.time = submap_time;
+        timed_point.submap_index = submap_index;
+        timed_map_points.push_back(timed_point);
+      }
+    }
     if (do_save_map && use_dynamic_object_filter_) {
       dynamic_filter_submaps.push_back(
         TimedSubmapCloud{
@@ -2982,8 +3166,24 @@ void GraphBasedSlamComponent::doPoseAdjustment(
 
   sensor_msgs::msg::PointCloud2::SharedPtr map_msg_ptr(new sensor_msgs::msg::PointCloud2);
   pcl::toROSMsg(*map_to_publish, *map_msg_ptr);
+  const auto publish_stamp = this->now();
   map_msg_ptr->header.frame_id = global_frame_id_;
+  map_msg_ptr->header.stamp = publish_stamp;
   modified_map_pub_->publish(*map_msg_ptr);
+  if (publish_modified_map_timed_) {
+    const double timed_leaf_size =
+      modified_map_timed_leaf_size_ >= 0.0 ? modified_map_timed_leaf_size_ : modified_map_leaf_size_;
+    const auto timed_points_to_publish = voxelizeTimedPoints(timed_map_points, timed_leaf_size);
+    std_msgs::msg::Header timed_header;
+    timed_header.frame_id = global_frame_id_;
+    timed_header.stamp = publish_stamp;
+    auto timed_msg = makeTimedPointCloud2(timed_points_to_publish, timed_header);
+    modified_map_timed_pub_->publish(timed_msg);
+    RCLCPP_INFO_THROTTLE(
+      get_logger(), *get_clock(), 5000,
+      "Published /modified_map_timed points %zu -> %zu leaf=%.3fm",
+      timed_map_points.size(), timed_points_to_publish.size(), timed_leaf_size);
+  }
   if (do_save_map) {
     pcl::PointCloud<pcl::PointXYZI>::Ptr map_to_save = map_ptr;
     if (use_dynamic_object_filter_) {
