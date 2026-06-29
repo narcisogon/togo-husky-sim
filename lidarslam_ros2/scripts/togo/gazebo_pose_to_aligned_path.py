@@ -42,6 +42,7 @@ class GazeboPoseToAlignedPath(Node):
         self.declare_parameter('extra_yaw_offset_deg', 0.0)
         self.declare_parameter('debug_candidates', True)
         self.declare_parameter('allow_fallback_entity', True)
+        self.declare_parameter('fallback_transform_index', 0)
         self.declare_parameter('republish_rate_hz', 2.0)
 
         self.pose_topic = str(self.get_parameter('pose_topic').value)
@@ -54,6 +55,7 @@ class GazeboPoseToAlignedPath(Node):
         self.extra_yaw_offset = math.radians(float(self.get_parameter('extra_yaw_offset_deg').value))
         self.debug_candidates = bool(self.get_parameter('debug_candidates').value)
         self.allow_fallback_entity = bool(self.get_parameter('allow_fallback_entity').value)
+        self.fallback_transform_index = int(self.get_parameter('fallback_transform_index').value)
         republish_rate_hz = float(self.get_parameter('republish_rate_hz').value)
 
         qos = QoSProfile(history=HistoryPolicy.KEEP_LAST, depth=100, reliability=ReliabilityPolicy.BEST_EFFORT)
@@ -65,7 +67,7 @@ class GazeboPoseToAlignedPath(Node):
 
         self.front0 = None
         self.gz0: TransformStamped | None = None
-        self.model_name: str | None = None
+        self.model_key: str | None = None
         self.yaw_delta = 0.0
         self.poses: deque[PoseStamped] = deque(maxlen=max(1, self.max_poses))
         self.last_xy: tuple[float, float] | None = None
@@ -74,6 +76,8 @@ class GazeboPoseToAlignedPath(Node):
         self.pose_msgs_seen = 0
         self.frontend_msgs_seen = 0
         self.empty_child_warned = False
+        self.fallback_warned = False
+        self.pending_model_key: str | None = None
         self.get_logger().info(
             f'Publishing {self.path_topic} from Gazebo pose topic {self.pose_topic}; candidates={self.model_names}'
         )
@@ -91,15 +95,24 @@ class GazeboPoseToAlignedPath(Node):
             return
         if self.gz0 is None:
             self.gz0 = transform
-            self.model_name = transform.child_frame_id
-            self.get_logger().info(f'Using Gazebo pose entity: {self.model_name}')
+            self.model_key = self.pending_model_key or self.transform_key(transform)
+            self.get_logger().info(f'Using Gazebo pose entity: {self.model_key}')
             self.try_init_alignment()
         if self.front0 is None or self.gz0 is None:
             return
         self.publish_aligned(transform)
 
-    def score_child(self, child: str) -> int:
-        normalized = child.replace('_', '-').lower()
+    def transform_key(self, transform: TransformStamped, index: int | None = None) -> str:
+        if transform.child_frame_id:
+            return transform.child_frame_id
+        if transform.header.frame_id:
+            return transform.header.frame_id
+        if index is not None:
+            return f'unnamed_transform_{index}'
+        return 'unnamed_transform'
+
+    def score_name(self, name: str) -> int:
+        normalized = name.replace('_', '-').lower()
         score = 0
         if any(name in normalized for name in self.model_names):
             score += 50
@@ -116,31 +129,46 @@ class GazeboPoseToAlignedPath(Node):
         return score
 
     def pick_transform(self, msg: TFMessage):
-        if self.model_name:
-            for transform in msg.transforms:
-                if transform.child_frame_id == self.model_name:
+        if self.model_key:
+            for index, transform in enumerate(msg.transforms):
+                if self.transform_key(transform, index) == self.model_key:
                     return transform
 
         best = None
         best_score = -999
-        for transform in msg.transforms:
-            child = transform.child_frame_id
-            if not child:
+        for index, transform in enumerate(msg.transforms):
+            key = self.transform_key(transform, index)
+            if not transform.child_frame_id:
                 if not self.empty_child_warned:
-                    self.get_logger().warn('Gazebo pose bridge produced empty child_frame_id entries; cannot identify robot from TFMessage names.')
+                    self.get_logger().warn(
+                        'Gazebo pose bridge produced empty child_frame_id entries; '
+                        'trying header.frame_id/fallback_transform_index.'
+                    )
                     self.empty_child_warned = True
+            if not transform.child_frame_id and not transform.header.frame_id:
                 continue
-            if self.debug_candidates and child not in self.seen_candidates:
-                self.seen_candidates.add(child)
+            if self.debug_candidates and key not in self.seen_candidates:
+                self.seen_candidates.add(key)
                 if len(self.seen_candidates) <= 30:
-                    self.get_logger().info(f'Gazebo pose candidate: {child}')
-            score = self.score_child(child)
+                    self.get_logger().info(f'Gazebo pose candidate: {key}')
+            score = self.score_name(key)
             if score > best_score:
                 best = transform
                 best_score = score
 
         if best is not None and best_score > 0:
+            self.pending_model_key = self.transform_key(best)
             return best
+        if self.allow_fallback_entity and msg.transforms:
+            fallback_index = min(max(0, self.fallback_transform_index), len(msg.transforms) - 1)
+            if not self.fallback_warned:
+                self.get_logger().warn(
+                    f'No named Gazebo pose candidate matched; using transform index {fallback_index}. '
+                    'Set fallback_transform_index if this is not the rover.'
+                )
+                self.fallback_warned = True
+            self.pending_model_key = self.transform_key(msg.transforms[fallback_index], fallback_index)
+            return msg.transforms[fallback_index]
         return None
 
     def try_init_alignment(self) -> None:
