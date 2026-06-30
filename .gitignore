@@ -11,3 +11,4 @@ __pycache__/
 *.tif
 *.tiff
 runs/
+.git_vendor_backup/

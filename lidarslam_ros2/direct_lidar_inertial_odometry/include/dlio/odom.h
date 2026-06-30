@@ -1,0 +1,520 @@
+/***********************************************************
+ *                                                         *
+ * Copyright (c)                                           *
+ *                                                         *
+ * The Verifiable & Control-Theoretic Robotics (VECTR) Lab *
+ * University of California, Los Angeles                   *
+ *                                                         *
+ * Authors: Kenny J. Chen, Ryan Nemiroff, Brett T. Lopez   *
+ * Contact: {kennyjchen, ryguyn, btlopez}@ucla.edu         *
+ *                                                         *
+ ***********************************************************/
+
+#include "dlio/dlio.h"
+
+// ROS
+#include "rclcpp/rclcpp.hpp"
+#include <deque>
+#include <fstream>
+#include <nav_msgs/msg/odometry.hpp>
+#include <geometry_msgs/msg/pose_stamped.hpp>
+#include <geometry_msgs/msg/pose_array.hpp>
+#include <nav_msgs/msg/path.hpp>
+#include <sensor_msgs/msg/imu.hpp>
+#include <sensor_msgs/msg/point_cloud2.hpp>
+#include <std_msgs/msg/float32_multi_array.hpp>
+#include <tf2_ros/transform_broadcaster.h>
+
+// BOOST
+#include <boost/format.hpp>
+#include <boost/circular_buffer.hpp>
+#include <boost/algorithm/string.hpp>
+#include <boost/range/adaptor/indexed.hpp>
+#include <boost/range/adaptor/adjacent_filtered.hpp>
+
+// PCL
+#include <pcl/filters/crop_box.h>
+#include <pcl/filters/voxel_grid.h>
+#include <pcl/filters/statistical_outlier_removal.h>
+#include <pcl/io/pcd_io.h>
+#include <pcl/surface/concave_hull.h>
+#include <pcl/surface/convex_hull.h>
+#include <pcl_conversions/pcl_conversions.h>
+
+class dlio::OdomNode: public rclcpp::Node {
+
+public:
+
+  OdomNode();
+  ~OdomNode();
+
+  void start();
+
+private:
+
+  struct State;
+  struct ImuMeas;
+  struct DiagnosticEvent;
+
+  void getParams();
+
+  void callbackPointCloud(const sensor_msgs::msg::PointCloud2::SharedPtr pc);
+  void callbackImu(const sensor_msgs::msg::Imu::SharedPtr imu);
+
+  void publishPose();
+
+  void publishToROS(pcl::PointCloud<PointType>::ConstPtr published_cloud, Eigen::Matrix4f T_cloud);
+  void publishCloud(pcl::PointCloud<PointType>::ConstPtr published_cloud, Eigen::Matrix4f T_cloud);
+  void publishKeyframe(std::pair<std::pair<Eigen::Vector3f, Eigen::Quaternionf>,
+                       pcl::PointCloud<PointType>::ConstPtr> kf, rclcpp::Time timestamp);
+  void publishDiagnostics(float status_code, float raw_points = 0.0f, float filtered_points = 0.0f);
+  void updateSyncDiagnostics(double scan_start_stamp, double scan_end_stamp, int imu_samples_used);
+  void recordDiagnosticEvent(const std::string& type, const std::string& detail,
+                             float raw_points = 0.0f, float filtered_points = 0.0f,
+                             double compute_time_ms = 0.0);
+  void printDiagnosticHistory();
+  std::string formatDiagnosticEvent(const DiagnosticEvent& event) const;
+  std::string diagnosticLikelyCause(const std::string& type) const;
+  void appendDiagnosticEventToFile(const DiagnosticEvent& event);
+
+  void getScanFromROS(const sensor_msgs::msg::PointCloud2::SharedPtr& pc);
+  void preprocessPoints();
+  void deskewPointcloud();
+  void initializeInputTarget();
+  void setInputSource();
+
+  void initializeDLIO();
+
+  bool getNextPose();
+  bool imuMeasFromTimeRange(double start_time, double end_time,
+                            boost::circular_buffer<ImuMeas>::reverse_iterator& begin_imu_it,
+                            boost::circular_buffer<ImuMeas>::reverse_iterator& end_imu_it,
+                            std::unique_lock<std::mutex>& imu_lock);
+  std::vector<Eigen::Matrix4f, Eigen::aligned_allocator<Eigen::Matrix4f>>
+    integrateImu(double start_time, Eigen::Quaternionf q_init, Eigen::Vector3f p_init, Eigen::Vector3f v_init,
+                 const std::vector<double>& sorted_timestamps);
+  std::vector<Eigen::Matrix4f, Eigen::aligned_allocator<Eigen::Matrix4f>>
+    integrateImuInternal(Eigen::Quaternionf q_init, Eigen::Vector3f p_init, Eigen::Vector3f v_init,
+                         const std::vector<double>& sorted_timestamps,
+                         boost::circular_buffer<ImuMeas>::reverse_iterator begin_imu_it,
+                         boost::circular_buffer<ImuMeas>::reverse_iterator end_imu_it);
+  void propagateGICP();
+
+  void propagateState();
+  void updateState();
+
+  void setAdaptiveParams();
+  void setKeyframeCloud();
+
+  void computeMetrics();
+  void computeSpaciousness();
+  void computeDensity();
+
+  sensor_msgs::msg::Imu::SharedPtr transformImu(const sensor_msgs::msg::Imu::SharedPtr& imu);
+
+  void updateKeyframes();
+  void computeConvexHull();
+  void computeConcaveHull();
+  void pushSubmapIndices(std::vector<float> dists, int k, std::vector<int> frames);
+  void buildSubmap(State vehicle_state);
+  void buildKeyframesAndSubmap(State vehicle_state);
+  void pauseSubmapBuildIfNeeded();
+
+  void debug();
+
+  rclcpp::TimerBase::SharedPtr publish_timer;
+  rclcpp::TimerBase::SharedPtr diagnostics_timer;
+
+  // Subscribers
+  rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr lidar_sub;
+  rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub;
+  rclcpp::CallbackGroup::SharedPtr lidar_cb_group, imu_cb_group;
+
+  // Publishers
+  rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_pub;
+  rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr pose_pub;
+  rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr path_pub;
+  rclcpp::Publisher<geometry_msgs::msg::PoseArray>::SharedPtr kf_pose_pub;
+  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr kf_cloud_pub;
+  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr deskewed_pub;
+  rclcpp::Publisher<std_msgs::msg::Float32MultiArray>::SharedPtr diagnostics_pub;
+
+  // TF
+  std::shared_ptr<tf2_ros::TransformBroadcaster> br;
+
+  // ROS Msgs
+  nav_msgs::msg::Odometry odom_ros;
+  geometry_msgs::msg::PoseStamped pose_ros;
+  nav_msgs::msg::Path path_ros;
+  geometry_msgs::msg::PoseArray kf_pose_ros;
+
+  // Flags
+  std::atomic<bool> dlio_initialized;
+  std::atomic<bool> first_valid_scan;
+  std::atomic<bool> first_imu_received;
+  std::atomic<bool> imu_calibrated;
+  std::atomic<bool> submap_hasChanged;
+  std::atomic<bool> gicp_hasConverged;
+  std::atomic<bool> deskew_status;
+  std::atomic<int> deskew_size;
+
+  // Threads
+  std::thread publish_thread;
+  std::thread publish_keyframe_thread;
+  std::thread metrics_thread;
+  std::thread debug_thread;
+
+  // Trajectory
+  std::vector<std::pair<Eigen::Vector3f, Eigen::Quaternionf>> trajectory;
+  double length_traversed;
+
+  // Keyframes
+  std::vector<std::pair<std::pair<Eigen::Vector3f, Eigen::Quaternionf>,
+                        pcl::PointCloud<PointType>::ConstPtr>> keyframes;
+  std::vector<rclcpp::Time> keyframe_timestamps;
+  std::vector<std::shared_ptr<const nano_gicp::CovarianceList>> keyframe_normals;
+  std::vector<Eigen::Matrix4f, Eigen::aligned_allocator<Eigen::Matrix4f>> keyframe_transformations;
+  std::mutex keyframes_mutex;
+
+  // Sensor Type
+  dlio::SensorType sensor;
+
+  // Frames
+  std::string odom_frame;
+  std::string baselink_frame;
+  std::string lidar_frame;
+  std::string imu_frame;
+
+  // Preprocessing
+  pcl::CropBox<PointType> crop;
+  pcl::VoxelGrid<PointType> voxel;
+
+  // Point Clouds
+  pcl::PointCloud<PointType>::ConstPtr original_scan;
+  pcl::PointCloud<PointType>::ConstPtr deskewed_scan;
+  pcl::PointCloud<PointType>::ConstPtr current_scan;
+
+  // Keyframes
+  pcl::PointCloud<PointType>::ConstPtr keyframe_cloud;
+  int num_processed_keyframes;
+
+  pcl::ConvexHull<PointType> convex_hull;
+  pcl::ConcaveHull<PointType> concave_hull;
+  std::vector<int> keyframe_convex;
+  std::vector<int> keyframe_concave;
+
+  // Submap
+  pcl::PointCloud<PointType>::ConstPtr submap_cloud;
+  std::shared_ptr<const nano_gicp::CovarianceList> submap_normals;
+  std::shared_ptr<const nanoflann::KdTreeFLANN<PointType>> submap_kdtree;
+
+  std::vector<int> submap_kf_idx_curr;
+  std::vector<int> submap_kf_idx_prev;
+
+  bool new_submap_is_ready;
+  std::future<void> submap_future;
+  std::condition_variable submap_build_cv;
+  bool main_loop_running;
+  std::mutex main_loop_running_mutex;
+
+  // Timestamps
+  rclcpp::Time scan_header_stamp;
+  double scan_stamp;
+  double prev_scan_stamp;
+  double scan_dt;
+  std::vector<double> comp_times;
+  std::vector<double> imu_rates;
+  std::vector<double> lidar_rates;
+
+  double first_scan_stamp;
+  double elapsed_time;
+
+  // GICP
+  nano_gicp::NanoGICP<PointType, PointType> gicp;
+  nano_gicp::NanoGICP<PointType, PointType> gicp_temp;
+
+  // Transformations
+  Eigen::Matrix4f T, T_prior, T_corr;
+  Eigen::Quaternionf q_final;
+
+  Eigen::Vector3f origin;
+
+  struct Extrinsics {
+    struct SE3 {
+      Eigen::Vector3f t;
+      Eigen::Matrix3f R;
+    };
+    SE3 baselink2imu;
+    SE3 baselink2lidar;
+    Eigen::Matrix4f baselink2imu_T;
+    Eigen::Matrix4f baselink2lidar_T;
+  }; Extrinsics extrinsics;
+
+  // IMU
+  rclcpp::Time imu_stamp;
+  double first_imu_stamp;
+  double prev_imu_stamp;
+  double imu_dp, imu_dq_deg;
+
+  struct ImuMeas {
+    double stamp;
+    double dt; // defined as the difference between the current and the previous measurement
+    Eigen::Vector3f ang_vel;
+    Eigen::Vector3f lin_accel;
+  }; ImuMeas imu_meas;
+
+  boost::circular_buffer<ImuMeas> imu_buffer;
+  std::mutex mtx_imu;
+  std::condition_variable cv_imu_stamp;
+
+  static bool comparatorImu(ImuMeas m1, ImuMeas m2) {
+    return (m1.stamp < m2.stamp);
+  };
+
+  // Geometric Observer
+  struct Geo {
+    bool first_opt_done;
+    std::mutex mtx;
+    double dp;
+    double dq_deg;
+    Eigen::Vector3f prev_p;
+    Eigen::Quaternionf prev_q;
+    Eigen::Vector3f prev_vel;
+  }; Geo geo;
+
+  // State Vector
+  struct ImuBias {
+    Eigen::Vector3f gyro;
+    Eigen::Vector3f accel;
+  };
+
+  struct Frames {
+    Eigen::Vector3f b;
+    Eigen::Vector3f w;
+  };
+
+  struct Velocity {
+    Frames lin;
+    Frames ang;
+  };
+
+  struct State {
+    Eigen::Vector3f p; // position in world frame
+    Eigen::Quaternionf q; // orientation in world frame
+    Velocity v;
+    ImuBias b; // imu biases in body frame
+  }; State state;
+
+  struct Pose {
+    Eigen::Vector3f p; // position in world frame
+    Eigen::Quaternionf q; // orientation in world frame
+  };
+  Pose lidarPose;
+  Pose imuPose;
+
+  // Metrics
+  struct Metrics {
+    std::vector<float> spaciousness;
+    std::vector<float> density;
+  }; Metrics metrics;
+
+  std::string cpu_type;
+  std::vector<double> cpu_percents;
+  clock_t lastCPU, lastSysCPU, lastUserCPU;
+  int numProcessors;
+  double last_debug_print_time_;
+
+  struct DiagnosticEvent {
+    double wall_time;
+    double scan_stamp;
+    std::string type;
+    std::string detail;
+    float raw_points;
+    float filtered_points;
+    double compute_time_ms;
+    double latest_imu_age_ms;
+    int keyframes;
+    int imu_buffer_size;
+    int bad_correction_streak;
+    float correction_translation;
+    float correction_rotation_deg;
+    float gicp_fitness;
+    int gicp_inliers;
+    float gicp_overlap;
+    float hessian_min_eigen;
+    float hessian_max_eigen;
+    float hessian_condition;
+    float gicp_solve_time_ms;
+    int gicp_quality_mode;
+    float angular_rate;
+    bool spin_protection_active;
+    float imu_age_ms_snapshot;
+    bool timing_protection_active;
+    float lidar_header_stamp;
+    float scan_start_stamp;
+    float scan_end_stamp;
+    float oldest_imu_stamp;
+    float latest_imu_stamp;
+    float latest_imu_minus_lidar_ms;
+    bool imu_covers_scan_start;
+    bool imu_covers_scan_end;
+    int imu_samples_used_for_deskew;
+    int stale_scan_drop_count;
+    float scan_duration_ms;
+    Eigen::Vector3f position;
+    float orientation_w;
+    size_t submap_points;
+  };
+  std::deque<DiagnosticEvent> diagnostic_history_;
+  std::mutex diagnostic_history_mutex_;
+  std::string diagnostic_history_file_;
+  std::atomic<bool> diagnostic_history_printed_;
+
+  // Parameters
+  std::string version_;
+  int num_threads_;
+  double debug_print_period_;
+  int diagnostic_history_size_;
+  double diagnostic_lag_warning_ms_;
+  double diagnostic_imu_age_warning_ms_;
+  int diagnostic_keyframe_warning_count_;
+  int diagnostic_submap_warning_points_;
+
+  bool deskew_;
+
+  double gravity_;
+
+  bool time_offset_;
+
+  bool adaptive_params_;
+
+  double obs_submap_thresh_;
+  double obs_keyframe_thresh_;
+  double obs_keyframe_lag_;
+
+  double keyframe_thresh_dist_;
+  double keyframe_thresh_rot_;
+
+  int submap_knn_;
+  int submap_kcv_;
+  int submap_kcc_;
+  double submap_concave_alpha_;
+
+  bool densemap_filtered_;
+  bool wait_until_move_;
+
+  double crop_size_;
+
+  bool vf_use_;
+  double vf_res_;
+
+  bool imu_calibrate_;
+  bool calibrate_gyro_;
+  bool calibrate_accel_;
+  bool gravity_align_;
+  double imu_calib_time_;
+  int imu_buffer_size_;
+  Eigen::Matrix3f imu_accel_sm_;
+
+  int gicp_min_num_points_;
+  int gicp_k_correspondences_;
+  double gicp_max_corr_dist_;
+  int gicp_max_iter_;
+  double gicp_transformation_ep_;
+  double gicp_rotation_ep_;
+  double gicp_init_lambda_factor_;
+  bool gicp_reject_bad_corrections_;
+  double gicp_max_correction_translation_;
+  double gicp_max_correction_rotation_;
+  bool spin_protection_enabled_;
+  double spin_protection_angular_rate_;
+  double spin_protection_max_translation_;
+  double spin_protection_recovery_translation_step_;
+  double spin_protection_recovery_rotation_step_;
+  bool spin_protection_use_imu_prior_on_reject_;
+  bool timing_protection_enabled_;
+  double timing_protection_imu_age_ms_;
+  double timing_protection_max_translation_;
+  double timing_protection_max_rotation_;
+  double timing_protection_recovery_translation_step_;
+  double timing_protection_recovery_rotation_step_;
+  bool timing_protection_drop_stale_scans_;
+  double timing_protection_drop_imu_age_ms_;
+  int timing_protection_drop_reject_streak_;
+  int timing_protection_max_iterations_;
+  std::atomic<float> last_correction_translation_;
+  std::atomic<float> last_correction_rotation_deg_;
+  std::atomic<bool> last_correction_rejected_;
+  std::atomic<float> last_gicp_fitness_;
+  std::atomic<int> last_gicp_inliers_;
+  std::atomic<float> last_gicp_overlap_;
+  std::atomic<float> last_hessian_min_eigen_;
+  std::atomic<float> last_hessian_max_eigen_;
+  std::atomic<float> last_hessian_condition_;
+  std::atomic<float> last_gicp_solve_time_ms_;
+  std::atomic<int> last_gicp_quality_mode_;
+  std::atomic<float> last_angular_rate_;
+  std::atomic<bool> last_spin_protection_active_;
+  std::atomic<float> last_imu_age_ms_;
+  std::atomic<bool> last_timing_protection_active_;
+  std::atomic<float> last_lidar_header_stamp_;
+  std::atomic<float> last_scan_start_stamp_;
+  std::atomic<float> last_scan_end_stamp_;
+  std::atomic<float> last_oldest_imu_stamp_;
+  std::atomic<float> last_latest_imu_stamp_;
+  std::atomic<float> last_latest_imu_minus_lidar_ms_;
+  std::atomic<bool> last_imu_covers_scan_start_;
+  std::atomic<bool> last_imu_covers_scan_end_;
+  std::atomic<int> last_imu_samples_used_for_deskew_;
+  std::atomic<int> stale_scan_drop_count_;
+  std::atomic<float> last_scan_duration_ms_;
+  std::atomic<int> bad_correction_streak_;
+  bool freeze_on_bad_correction_;
+  int bad_correction_freeze_streak_;
+  double bad_correction_recovery_translation_step_;
+  double bad_correction_recovery_rotation_step_;
+  double bad_correction_max_linear_speed_;
+  double bad_correction_velocity_decay_;
+  int bad_correction_velocity_decay_streak_;
+  int bad_correction_hold_streak_;
+  bool quality_use_partial_degenerate_;
+  double quality_min_overlap_;
+  double quality_degenerate_min_overlap_;
+  double quality_max_fitness_;
+  double quality_degenerate_max_fitness_;
+  double quality_min_hessian_eigen_;
+  double quality_max_hessian_condition_;
+  double quality_partial_correction_scale_;
+  double quality_partial_max_translation_;
+  double quality_partial_max_rotation_;
+  bool innovation_gate_enabled_;
+  double innovation_gate_partial_scale_;
+  double innovation_gate_max_translation_;
+  double innovation_gate_max_yaw_;
+  bool degeneracy_projection_enabled_;
+  double degeneracy_projection_condition_;
+  double degeneracy_projection_min_scale_;
+  bool recovery_enabled_;
+  int recovery_reject_streak_;
+  double recovery_max_correspondence_distance_;
+  int recovery_max_iterations_;
+  double recovery_accept_translation_;
+  double recovery_accept_rotation_;
+  double recovery_min_overlap_;
+  double recovery_max_fitness_;
+  int recovery_attempt_spacing_;
+  bool recovery_skip_when_timing_active_;
+  int recovery_last_attempt_streak_;
+  std::vector<double> recovery_yaw_offsets_deg_;
+  State last_accepted_state_;
+  Eigen::Matrix4f last_accepted_T_;
+
+  double geo_Kp_;
+  double geo_Kv_;
+  double geo_Kq_;
+  double geo_Kab_;
+  double geo_Kgb_;
+  double geo_abias_max_;
+  double geo_gbias_max_;
+
+};
