@@ -98,6 +98,7 @@ Backend:
 /modified_map_timed
 /modified_map_array
 /modified_path
+/loop_diagnostics
 ```
 
 Reference path:
@@ -182,6 +183,7 @@ Backend loop closure section:
 registration_method: NDT
 threshold_loop_closure_score: 15.0
 scan_context_threshold: 0.45
+use_distance_loop_candidates: false
 loop_max_translation_delta: 15.0
 loop_max_rotation_delta_deg: 45.0
 loop_edge_info_weight: 200.0
@@ -197,6 +199,33 @@ loop_max_translation_delta: 5.0
 loop_max_rotation_delta_deg: 20.0
 loop_edge_info_weight: 50.0
 ```
+
+Watch loop-closure decisions while driving:
+
+```bash
+ros2 topic echo /loop_diagnostics
+```
+
+If `ros2 topic echo` shortens the JSON with `...`, use:
+
+```bash
+ros2 topic echo /loop_diagnostics --full-length
+```
+
+Each message is a JSON string. The most useful fields are:
+
+- `event`: scan-context candidate, candidate result, no valid candidate, or loop edge result
+- `scan_context_query_ms`: descriptor lookup time
+- `registration_ms`: NDT/GICP verification time for that candidate
+- `loop_search_ms`: total backend loop-search time for that query
+- `fitness`, `translation_delta_m`, `rotation_delta_deg`: why a loop passed or failed
+- `reject_reason`: `fitness_threshold`, `translation_cap`, `rotation_cap`, or `registration_not_converged`
+
+For the DLIO live config, `use_distance_loop_candidates` is disabled. This keeps
+loop closure descriptor-driven: Scan Context can propose places, but NDT/GICP
+still has to verify them. The old distance fallback can accept a wrong loop when
+frontend odom has drifted close to an old submap, so keep it off unless you are
+doing a controlled comparison.
 
 ## Per-Point Timestamps
 
@@ -335,6 +364,7 @@ ros2 topic hz /dlio/deskewed
 ros2 topic hz /modified_map
 ros2 topic hz /modified_map_timed
 ros2 topic echo /dlio/frontend_diagnostics
+ros2 topic echo /loop_diagnostics
 ```
 
 Check TF:
@@ -461,4 +491,3 @@ Run Nav2:
 ```bash
 bash /ws/src/lidarslam_ros2/scripts/togo/run_nav2_with_slam.sh
 ```
-

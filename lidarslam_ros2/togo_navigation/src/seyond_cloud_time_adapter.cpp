@@ -88,6 +88,7 @@ public:
     scan_period_sec_ = declare_parameter<double>("scan_period_sec", 1.0 / 15.0);
     reverse_column_time_ = declare_parameter<bool>("reverse_column_time", false);
     stamp_at_scan_start_ = declare_parameter<bool>("stamp_at_scan_start", true);
+    drop_non_increasing_stamps_ = declare_parameter<bool>("drop_non_increasing_stamps", true);
 
     if (scan_period_sec_ <= 0.0) {
       RCLCPP_WARN(get_logger(), "scan_period_sec must be positive; using 1/15 s");
@@ -116,6 +117,21 @@ private:
       RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "Skipping malformed cloud");
       return;
     }
+
+    const double input_stamp = rclcpp::Time(input->header.stamp).seconds();
+    if (drop_non_increasing_stamps_ && last_output_stamp_ > 0.0 && input_stamp <= last_output_stamp_) {
+      ++dropped_non_increasing_stamps_;
+      RCLCPP_WARN_THROTTLE(
+        get_logger(),
+        *get_clock(),
+        1000,
+        "Dropping non-increasing cloud stamp before timing adapter: %.9f <= %.9f (dropped=%zu)",
+        input_stamp,
+        last_output_stamp_,
+        dropped_non_increasing_stamps_);
+      return;
+    }
+    last_output_stamp_ = input_stamp;
 
     const auto * x_field = findField(*input, "x");
     const auto * y_field = findField(*input, "y");
@@ -203,6 +219,9 @@ private:
   double scan_period_sec_ {};
   bool reverse_column_time_ {};
   bool stamp_at_scan_start_ {};
+  bool drop_non_increasing_stamps_ {};
+  double last_output_stamp_ {};
+  size_t dropped_non_increasing_stamps_ {};
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr publisher_;
   rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr subscription_;
 };

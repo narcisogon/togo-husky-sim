@@ -101,6 +101,7 @@ extern "C" {
 #include <sensor_msgs/msg/imu.hpp>
 #include <sensor_msgs/msg/nav_sat_fix.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
+#include <std_msgs/msg/string.hpp>
 #include <std_srvs/srv/empty.hpp>
 #include <tf2_eigen/tf2_eigen.hpp>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
@@ -148,6 +149,7 @@ private:
     rclcpp::Publisher < nav_msgs::msg::Path > ::SharedPtr modified_path_pub_;
     rclcpp::Publisher < sensor_msgs::msg::PointCloud2 > ::SharedPtr modified_map_pub_;
     rclcpp::Publisher < sensor_msgs::msg::PointCloud2 > ::SharedPtr modified_map_timed_pub_;
+    rclcpp::Publisher < std_msgs::msg::String > ::SharedPtr loop_diagnostics_pub_;
     rclcpp::TimerBase::SharedPtr loop_detect_timer_;
     rclcpp::TimerBase::SharedPtr modified_map_publish_timer_;
     rclcpp::Service < std_srvs::srv::Empty > ::SharedPtr map_save_srv_;
@@ -191,6 +193,7 @@ private:
       const geometry_msgs::msg::Pose & odom_pose,
       const Eigen::Isometry3d & optimized_map_pose);
     void publishMapToOdomTf(const rclcpp::Time & stamp);
+    void publishLoopDiagnostic(const std::string & payload);
 
     // loop search parameter
     int loop_detection_period_;
@@ -256,6 +259,7 @@ private:
     bool debug_flag_ {false};
 
     // Scan Context loop detection
+    bool use_distance_loop_candidates_ {true};
     bool use_scan_context_ {false};
     double scan_context_threshold_ {0.3};
     bool prefer_scan_context_candidates_ {false};

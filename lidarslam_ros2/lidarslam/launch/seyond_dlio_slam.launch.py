@@ -37,6 +37,7 @@ def generate_launch_description():
             {'scan_period_sec': timed_cloud_scan_period},
             {'reverse_column_time': timed_cloud_reverse_columns},
             {'stamp_at_scan_start': True},
+            {'drop_non_increasing_stamps': True},
         ],
     )
 

@@ -37,6 +37,7 @@
 #include <fstream>
 #include <iomanip>
 #include <limits>
+#include <sstream>
 #include <unordered_map>
 #include <vector>
 
@@ -45,6 +46,7 @@
 #include "graph_based_slam/dynamic_object_filter.hpp"
 #include "g2o/core/robust_kernel_impl.h"
 #include <std_msgs/msg/header.hpp>
+#include <std_msgs/msg/string.hpp>
 #define GRAPH_BASED_SLAM_WITH_G2O 1
 #include "graph_based_slam/loop_edge_robustifier.hpp"
 
@@ -261,6 +263,8 @@ GraphBasedSlamComponent::GraphBasedSlamComponent(const rclcpp::NodeOptions & opt
   get_parameter("use_save_map_in_loop", use_save_map_in_loop_);
   declare_parameter("debug_flag", false);
   get_parameter("debug_flag", debug_flag_);
+  declare_parameter("use_distance_loop_candidates", true);
+  get_parameter("use_distance_loop_candidates", use_distance_loop_candidates_);
   declare_parameter("adjacent_edge_info_weight", 1000.0);
   get_parameter("adjacent_edge_info_weight", adjacent_edge_info_weight_);
   declare_parameter("adjacent_edge_info_auto_scale", false);
@@ -994,6 +998,8 @@ GraphBasedSlamComponent::GraphBasedSlamComponent(const rclcpp::NodeOptions & opt
   std::cout << "scan_context_loop_closure_score_threshold:" <<
     scan_context_loop_closure_score_threshold_ << std::endl;
   std::cout << "distance_loop_closure[m]:" << distance_loop_closure_ << std::endl;
+  std::cout << "use_distance_loop_candidates:" << std::boolalpha <<
+    use_distance_loop_candidates_ << std::endl;
   std::cout << "range_of_searching_loop_closure[m]:" << range_of_searching_loop_closure_ <<
     std::endl;
   std::cout << "search_submap_num:" << search_submap_num_ << std::endl;
@@ -1327,6 +1333,10 @@ void GraphBasedSlamComponent::initializePubSub()
     "modified_map_timed",
     rclcpp::QoS(10));
 
+  loop_diagnostics_pub_ = create_publisher<std_msgs::msg::String>(
+    "loop_diagnostics",
+    rclcpp::QoS(50));
+
   modified_map_array_pub_ = create_publisher<lidarslam_msgs::msg::MapArray>(
     "modified_map_array", rclcpp::QoS(10));
 
@@ -1368,6 +1378,16 @@ void GraphBasedSlamComponent::initializePubSub()
   }
 
   RCLCPP_INFO(get_logger(), "initialization end");
+}
+
+void GraphBasedSlamComponent::publishLoopDiagnostic(const std::string & payload)
+{
+  if (!loop_diagnostics_pub_) {
+    return;
+  }
+  std_msgs::msg::String msg;
+  msg.data = payload;
+  loop_diagnostics_pub_->publish(msg);
 }
 
 void GraphBasedSlamComponent::handleMapSaveRequest(
@@ -1523,6 +1543,17 @@ const char * candidate_source_name(LoopCandidate::Source source)
       return "distance";
   }
 }
+
+double elapsedMillis(const std::chrono::steady_clock::time_point & start)
+{
+  return std::chrono::duration<double, std::milli>(
+    std::chrono::steady_clock::now() - start).count();
+}
+
+const char * jsonBool(bool value)
+{
+  return value ? "true" : "false";
+}
 }  // namespace
 
 void GraphBasedSlamComponent::searchLoop()
@@ -1676,6 +1707,11 @@ void GraphBasedSlamComponent::searchLoopForLatest(
   int num_submaps,
   int latest_idx)
 {
+  const auto loop_search_start = std::chrono::steady_clock::now();
+  double scan_context_query_ms = -1.0;
+  double best_scan_context_distance = std::numeric_limits<double>::max();
+  int best_scan_context_index = -1;
+
   const auto & latest_submap = map_array_msg.submaps[latest_idx];
   Eigen::Affine3d latest_affine;
   tf2::fromMsg(latest_submap.pose, latest_affine);
@@ -1826,12 +1862,19 @@ void GraphBasedSlamComponent::searchLoopForLatest(
   std::sort(distance_candidates.begin(), distance_candidates.end());
 
   if (use_scan_context_ && scan_context_db_.size() > ScanContext::EXCLUDE_RECENT) {
+    const auto scan_context_query_start = std::chrono::steady_clock::now();
     const auto sc_matches = scan_context_db_.queryTopMatchesWithYaw(
       scan_context_db_.descriptors.back(),
       max_loop_candidate_count_,
       ScanContext::NUM_CANDIDATES,
       ScanContext::EXCLUDE_RECENT,
       scan_context_threshold_);
+    scan_context_query_ms = elapsedMillis(scan_context_query_start);
+
+    if (!sc_matches.empty()) {
+      best_scan_context_distance = sc_matches.front().distance;
+      best_scan_context_index = sc_matches.front().submap_id;
+    }
 
     if (!sc_matches.empty()) {
       bool added_scan_context_candidate = false;
@@ -1863,6 +1906,20 @@ void GraphBasedSlamComponent::searchLoopForLatest(
           sc_yaw_rad += 2.0 * M_PI;
         }
         add_candidate(sc_idx, sc_dist, LoopCandidate::Source::SCAN_CONTEXT, sc_yaw_rad);
+        {
+          std::ostringstream diag;
+          diag << std::fixed << std::setprecision(6)
+               << "{\"event\":\"scan_context_candidate\""
+               << ",\"latest_idx\":" << latest_idx
+               << ",\"candidate_idx\":" << sc_idx
+               << ",\"sc_dist\":" << sc_dist
+               << ",\"sc_threshold\":" << scan_context_threshold_
+               << ",\"sc_yaw_deg\":" << sc_yaw_rad * 180.0 / M_PI
+               << ",\"travel_distance_m\":" << sc_travel_distance
+               << ",\"scan_context_query_ms\":" << scan_context_query_ms
+               << "}";
+          publishLoopDiagnostic(diag.str());
+        }
         std::cout << "ScanContext loop candidate: id=" << sc_idx
                   << " sc_dist=" << sc_dist
                   << " yaw_deg=" << sc_yaw_rad * 180.0 / M_PI << std::endl;
@@ -1873,6 +1930,19 @@ void GraphBasedSlamComponent::searchLoopForLatest(
         std::cout << "ScanContext matches exist but none satisfied travel-distance gating"
                   << std::endl;
       }
+      if (!added_scan_context_candidate) {
+        std::ostringstream diag;
+        diag << std::fixed << std::setprecision(6)
+             << "{\"event\":\"scan_context_no_usable_candidate\""
+             << ",\"latest_idx\":" << latest_idx
+             << ",\"best_candidate_idx\":" << best_scan_context_index
+             << ",\"best_sc_dist\":" << best_scan_context_distance
+             << ",\"sc_threshold\":" << scan_context_threshold_
+             << ",\"reason\":\"travel_distance_or_index_gate\""
+             << ",\"scan_context_query_ms\":" << scan_context_query_ms
+             << "}";
+        publishLoopDiagnostic(diag.str());
+      }
     } else if (debug_flag_) {
       auto [sc_idx, sc_dist] = scan_context_db_.query(
         scan_context_db_.descriptors.back(),
@@ -1882,6 +1952,32 @@ void GraphBasedSlamComponent::searchLoopForLatest(
       static_cast<void>(sc_idx);
       std::cout << "ScanContext no match: best_sc_dist=" << sc_dist
                 << " threshold=" << scan_context_threshold_ << std::endl;
+      std::ostringstream diag;
+      diag << std::fixed << std::setprecision(6)
+           << "{\"event\":\"scan_context_no_match\""
+           << ",\"latest_idx\":" << latest_idx
+           << ",\"best_candidate_idx\":" << sc_idx
+           << ",\"best_sc_dist\":" << sc_dist
+           << ",\"sc_threshold\":" << scan_context_threshold_
+           << ",\"scan_context_query_ms\":" << scan_context_query_ms
+           << "}";
+      publishLoopDiagnostic(diag.str());
+    } else {
+      auto [sc_idx, sc_dist] = scan_context_db_.query(
+        scan_context_db_.descriptors.back(),
+        ScanContext::NUM_CANDIDATES,
+        ScanContext::EXCLUDE_RECENT,
+        std::numeric_limits<double>::max());
+      std::ostringstream diag;
+      diag << std::fixed << std::setprecision(6)
+           << "{\"event\":\"scan_context_no_match\""
+           << ",\"latest_idx\":" << latest_idx
+           << ",\"best_candidate_idx\":" << sc_idx
+           << ",\"best_sc_dist\":" << sc_dist
+           << ",\"sc_threshold\":" << scan_context_threshold_
+           << ",\"scan_context_query_ms\":" << scan_context_query_ms
+           << "}";
+      publishLoopDiagnostic(diag.str());
     }
   }
 
@@ -2103,31 +2199,33 @@ void GraphBasedSlamComponent::searchLoopForLatest(
         return lhs.first < rhs.first;
       });
 
-    const int num_distance_candidates =
-      std::min(max_loop_candidate_count_, static_cast<int>(distance_candidates.size()));
-    for (int i = 0; i < num_distance_candidates; ++i) {
-      const int candidate_idx = distance_candidates[i].second;
-      const auto bev_hint = bev_rerank_hints.find(candidate_idx);
-      const double adjusted_distance = bev_adjusted_distance(distance_candidates[i]);
-      if (bev_hint != bev_rerank_hints.end()) {
-        add_candidate(
-          candidate_idx,
-          adjusted_distance,
-          LoopCandidate::Source::DISTANCE,
-          bev_hint->second.yaw_rad);
-        std::cout << "Distance candidate reranked by BEV: id=" << candidate_idx
-                  << " dist_m=" << distance_candidates[i].first
-                  << " bev_score=" << bev_hint->second.score
-                  << " adjusted_dist_m=" << adjusted_distance
-                  << " yaw_deg=" << bev_hint->second.yaw_rad * 180.0 / M_PI << std::endl;
-      } else {
-        add_candidate(
-          candidate_idx,
-          adjusted_distance,
-          LoopCandidate::Source::DISTANCE);
+    if (use_distance_loop_candidates_) {
+      const int num_distance_candidates =
+        std::min(max_loop_candidate_count_, static_cast<int>(distance_candidates.size()));
+      for (int i = 0; i < num_distance_candidates; ++i) {
+        const int candidate_idx = distance_candidates[i].second;
+        const auto bev_hint = bev_rerank_hints.find(candidate_idx);
+        const double adjusted_distance = bev_adjusted_distance(distance_candidates[i]);
+        if (bev_hint != bev_rerank_hints.end()) {
+          add_candidate(
+            candidate_idx,
+            adjusted_distance,
+            LoopCandidate::Source::DISTANCE,
+            bev_hint->second.yaw_rad);
+          std::cout << "Distance candidate reranked by BEV: id=" << candidate_idx
+                    << " dist_m=" << distance_candidates[i].first
+                    << " bev_score=" << bev_hint->second.score
+                    << " adjusted_dist_m=" << adjusted_distance
+                    << " yaw_deg=" << bev_hint->second.yaw_rad * 180.0 / M_PI << std::endl;
+        } else {
+          add_candidate(
+            candidate_idx,
+            adjusted_distance,
+            LoopCandidate::Source::DISTANCE);
+        }
       }
     }
-  } else {
+  } else if (use_distance_loop_candidates_) {
     const int num_distance_candidates =
       std::min(max_loop_candidate_count_, static_cast<int>(distance_candidates.size()));
     for (int i = 0; i < num_distance_candidates; i++) {
@@ -2456,6 +2554,14 @@ void GraphBasedSlamComponent::searchLoopForLatest(
     }
   }
   if (candidates.empty()) {
+    std::ostringstream diag;
+    diag << std::fixed << std::setprecision(6)
+         << "{\"event\":\"loop_no_candidates\""
+         << ",\"latest_idx\":" << latest_idx
+         << ",\"scan_context_query_ms\":" << scan_context_query_ms
+         << ",\"loop_search_ms\":" << elapsedMillis(loop_search_start)
+         << "}";
+    publishLoopDiagnostic(diag.str());
     return;
   }
 
@@ -2606,13 +2712,30 @@ void GraphBasedSlamComponent::searchLoopForLatest(
         }
       }
     }
+    const auto registration_start = std::chrono::steady_clock::now();
     if (candidate.source != LoopCandidate::Source::DISTANCE || used_3d_bbs) {
       registration_->align(*output_cloud_ptr, initial_guess);
     } else {
       registration_->align(*output_cloud_ptr);
     }
+    const double registration_ms = elapsedMillis(registration_start);
     attempted_registration = true;
     if (!registration_->hasConverged()) {
+      std::ostringstream diag;
+      diag << std::fixed << std::setprecision(6)
+           << "{\"event\":\"loop_candidate_result\""
+           << ",\"latest_idx\":" << latest_idx
+           << ",\"candidate_idx\":" << candidate.index
+           << ",\"source\":\"" << candidate_source_name(candidate.source) << "\""
+           << ",\"selection_metric\":" << candidate.selection_metric
+           << ",\"registration_converged\":false"
+           << ",\"accepted\":false"
+           << ",\"reject_reason\":\"registration_not_converged\""
+           << ",\"registration_ms\":" << registration_ms
+           << ",\"scan_context_query_ms\":" << scan_context_query_ms
+           << ",\"loop_search_ms\":" << elapsedMillis(loop_search_start)
+           << "}";
+      publishLoopDiagnostic(diag.str());
       if (debug_flag_) {
         RCLCPP_INFO(
           get_logger(),
@@ -2660,6 +2783,30 @@ void GraphBasedSlamComponent::searchLoopForLatest(
       scan_context_loop_closure_score_threshold_ : threshold_loop_closure_score_;
 
     if (fitness_score >= loop_score_threshold) {
+      std::ostringstream diag;
+      diag << std::fixed << std::setprecision(6)
+           << "{\"event\":\"loop_candidate_result\""
+           << ",\"latest_idx\":" << latest_idx
+           << ",\"candidate_idx\":" << candidate.index
+           << ",\"source\":\"" << candidate_source_name(candidate.source) << "\""
+           << ",\"selection_metric\":" << candidate.selection_metric
+           << ",\"travel_distance_m\":" << candidate_result.travel_distance
+           << ",\"euclidean_distance_m\":" << candidate_result.euclidean_distance
+           << ",\"registration_converged\":true"
+           << ",\"fitness\":" << fitness_score
+           << ",\"fitness_threshold\":" << loop_score_threshold
+           << ",\"translation_delta_m\":" << translation_delta_m
+           << ",\"rotation_delta_deg\":" << rotation_delta_deg
+           << ",\"used_3d_bbs\":" << jsonBool(used_3d_bbs)
+           << ",\"three_d_bbs_score\":" << three_d_bbs_score_percentage
+           << ",\"three_d_bbs_ms\":" << three_d_bbs_elapsed_msec
+           << ",\"accepted\":false"
+           << ",\"reject_reason\":\"fitness_threshold\""
+           << ",\"registration_ms\":" << registration_ms
+           << ",\"scan_context_query_ms\":" << scan_context_query_ms
+           << ",\"loop_search_ms\":" << elapsedMillis(loop_search_start)
+           << "}";
+      publishLoopDiagnostic(diag.str());
       if (debug_flag_) {
         RCLCPP_INFO(
           get_logger(),
@@ -2683,7 +2830,40 @@ void GraphBasedSlamComponent::searchLoopForLatest(
     const double effective_rotation_cap_deg =
       (is_descriptor_source && loop_max_rotation_delta_deg_descriptor_ > 0.0) ?
       loop_max_rotation_delta_deg_descriptor_ : loop_max_rotation_delta_deg_;
+
+    auto publish_candidate_diagnostic =
+      [&](bool accepted, const char * reject_reason)
+      {
+        std::ostringstream diag;
+        diag << std::fixed << std::setprecision(6)
+             << "{\"event\":\"loop_candidate_result\""
+             << ",\"latest_idx\":" << latest_idx
+             << ",\"candidate_idx\":" << candidate.index
+             << ",\"source\":\"" << candidate_source_name(candidate.source) << "\""
+             << ",\"selection_metric\":" << candidate.selection_metric
+             << ",\"travel_distance_m\":" << candidate_result.travel_distance
+             << ",\"euclidean_distance_m\":" << candidate_result.euclidean_distance
+             << ",\"registration_converged\":true"
+             << ",\"fitness\":" << fitness_score
+             << ",\"fitness_threshold\":" << loop_score_threshold
+             << ",\"translation_delta_m\":" << translation_delta_m
+             << ",\"translation_cap_m\":" << effective_translation_cap
+             << ",\"rotation_delta_deg\":" << rotation_delta_deg
+             << ",\"rotation_cap_deg\":" << effective_rotation_cap_deg
+             << ",\"used_3d_bbs\":" << jsonBool(used_3d_bbs)
+             << ",\"three_d_bbs_score\":" << three_d_bbs_score_percentage
+             << ",\"three_d_bbs_ms\":" << three_d_bbs_elapsed_msec
+             << ",\"accepted\":" << jsonBool(accepted)
+             << ",\"reject_reason\":\"" << reject_reason << "\""
+             << ",\"registration_ms\":" << registration_ms
+             << ",\"scan_context_query_ms\":" << scan_context_query_ms
+             << ",\"loop_search_ms\":" << elapsedMillis(loop_search_start)
+             << "}";
+        publishLoopDiagnostic(diag.str());
+      };
+
     if (translation_delta_m > effective_translation_cap) {
+      publish_candidate_diagnostic(false, "translation_cap");
       if (debug_flag_) {
         RCLCPP_INFO(
           get_logger(),
@@ -2696,6 +2876,7 @@ void GraphBasedSlamComponent::searchLoopForLatest(
       continue;
     }
     if (rotation_delta_deg > effective_rotation_cap_deg) {
+      publish_candidate_diagnostic(false, "rotation_cap");
       if (debug_flag_) {
         RCLCPP_INFO(
           get_logger(),
@@ -2709,6 +2890,7 @@ void GraphBasedSlamComponent::searchLoopForLatest(
     }
 
     candidate_result.valid = true;
+    publish_candidate_diagnostic(true, "");
     if (!best_candidate.valid || fitness_score < best_candidate.fitness_score) {
       best_candidate = candidate_result;
     }
@@ -2737,6 +2919,19 @@ void GraphBasedSlamComponent::searchLoopForLatest(
 
   if (!best_candidate.valid) {
     if (best_attempt.index >= 0) {
+      std::ostringstream diag;
+      diag << std::fixed << std::setprecision(6)
+           << "{\"event\":\"loop_no_valid_candidate\""
+           << ",\"latest_idx\":" << latest_idx
+           << ",\"best_attempt_idx\":" << best_attempt.index
+           << ",\"best_attempt_source\":\"" << candidate_source_name(best_attempt.source) << "\""
+           << ",\"best_attempt_fitness\":" << best_attempt.fitness_score
+           << ",\"best_attempt_translation_delta_m\":" << best_attempt.translation_delta_m
+           << ",\"best_attempt_rotation_delta_deg\":" << best_attempt.rotation_delta_deg
+           << ",\"scan_context_query_ms\":" << scan_context_query_ms
+           << ",\"loop_search_ms\":" << elapsedMillis(loop_search_start)
+           << "}";
+      publishLoopDiagnostic(diag.str());
       std::cout << "best_loop_candidate id:" << best_attempt.index
                 << " source:" << candidate_source_name(best_attempt.source)
                 << " latest_id:" << latest_idx
@@ -2749,6 +2944,15 @@ void GraphBasedSlamComponent::searchLoopForLatest(
                 << " 3d_bbs_score:" << best_attempt.three_d_bbs_score_percentage
                 << std::endl;
     } else if (attempted_registration && debug_flag_) {
+      std::ostringstream diag;
+      diag << std::fixed << std::setprecision(6)
+           << "{\"event\":\"loop_no_valid_candidate\""
+           << ",\"latest_idx\":" << latest_idx
+           << ",\"best_attempt_idx\":-1"
+           << ",\"scan_context_query_ms\":" << scan_context_query_ms
+           << ",\"loop_search_ms\":" << elapsedMillis(loop_search_start)
+           << "}";
+      publishLoopDiagnostic(diag.str());
       RCLCPP_INFO(
         get_logger(), "No converged loop candidate remained for latest submap %d",
         latest_idx);
@@ -2770,6 +2974,25 @@ void GraphBasedSlamComponent::searchLoopForLatest(
   loop_edge.relative_pose = Eigen::Isometry3d(from.inverse() * to);
   loop_edge.fitness_score = best_candidate.fitness_score;
   const bool graph_changed = upsertLoopEdge(loop_edge);
+  {
+    std::ostringstream diag;
+    diag << std::fixed << std::setprecision(6)
+         << "{\"event\":\"loop_edge_result\""
+         << ",\"latest_idx\":" << latest_idx
+         << ",\"candidate_idx\":" << best_candidate.index
+         << ",\"source\":\"" << candidate_source_name(best_candidate.source) << "\""
+         << ",\"fitness\":" << best_candidate.fitness_score
+         << ",\"translation_delta_m\":" << best_candidate.translation_delta_m
+         << ",\"rotation_delta_deg\":" << best_candidate.rotation_delta_deg
+         << ",\"graph_changed\":" << jsonBool(graph_changed)
+         << ",\"used_3d_bbs\":" << jsonBool(best_candidate.used_3d_bbs)
+         << ",\"three_d_bbs_score\":" << best_candidate.three_d_bbs_score_percentage
+         << ",\"three_d_bbs_ms\":" << best_candidate.three_d_bbs_elapsed_msec
+         << ",\"scan_context_query_ms\":" << scan_context_query_ms
+         << ",\"loop_search_ms\":" << elapsedMillis(loop_search_start)
+         << "}";
+    publishLoopDiagnostic(diag.str());
+  }
 
   std::cout << "---" << std::endl;
   std::cout << "PoseAdjustment distance:" << best_candidate.travel_distance

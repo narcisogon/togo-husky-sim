@@ -285,6 +285,24 @@
     <model name="parking_sign_02"><static>true</static><pose>2 18 1.85 0 0 -0.55</pose><link name="post"><collision name="collision"><geometry><cylinder><radius>0.06</radius><length>2.8</length></cylinder></geometry></collision><visual name="visual"><geometry><cylinder><radius>0.06</radius><length>2.8</length></cylinder></geometry><material><ambient>0.45 0.45 0.43 1</ambient><diffuse>0.75 0.75 0.70 1</diffuse></material></visual></link><link name="sign"><pose>0 0 0.95 0 0 0</pose><collision name="collision"><geometry><box><size>1.1 0.10 0.70</size></box></geometry></collision><visual name="visual"><geometry><box><size>1.1 0.10 0.70</size></box></geometry><material><ambient>0.36 0.08 0.06 1</ambient><diffuse>0.70 0.14 0.12 1</diffuse></material></visual></link></model>
     <model name="parking_sign_03"><static>true</static><pose>25 1 1.85 0 0 0.75</pose><link name="post"><collision name="collision"><geometry><cylinder><radius>0.06</radius><length>2.8</length></cylinder></geometry></collision><visual name="visual"><geometry><cylinder><radius>0.06</radius><length>2.8</length></cylinder></geometry><material><ambient>0.45 0.45 0.43 1</ambient><diffuse>0.75 0.75 0.70 1</diffuse></material></visual></link><link name="sign"><pose>0 0 0.95 0 0 0</pose><collision name="collision"><geometry><box><size>0.80 0.10 0.95</size></box></geometry></collision><visual name="visual"><geometry><box><size>0.80 0.10 0.95</size></box></geometry><material><ambient>0.06 0.30 0.12 1</ambient><diffuse>0.12 0.58 0.24 1</diffuse></material></visual></link></model>
 
+    <!-- Obvious visual check landmark near the parking lot. If this bright
+         tower is not visible after launch, Gazebo is still loading another
+         world file. It also gives SLAM a tall non-repeating feature close to
+         the normal driving area. -->
+    <model name="visual_check_clocktower_near_lot">
+      <static>true</static>
+      <pose>0 20 4.25 0 0 0.35</pose>
+      <link name="tower_body">
+        <collision name="collision"><geometry><box><size>3.0 3.0 8.5</size></box></geometry></collision>
+        <visual name="visual"><geometry><box><size>3.0 3.0 8.5</size></box></geometry>
+          <material><ambient>0.55 0.42 0.12 1</ambient><diffuse>0.95 0.72 0.22 1</diffuse><specular>0.02 0.02 0.02 1</specular></material>
+        </visual>
+      </link>
+      <link name="dark_cap"><pose>0 0 4.55 0 0 0</pose><collision name="collision"><geometry><box><size>4.2 4.2 0.55</size></box></geometry></collision><visual name="visual"><geometry><box><size>4.2 4.2 0.55</size></box></geometry><material><ambient>0.05 0.05 0.055 1</ambient><diffuse>0.10 0.10 0.11 1</diffuse></material></visual></link>
+      <link name="side_fin_a"><pose>2.0 0 0.5 0 0 0</pose><collision name="collision"><geometry><box><size>0.45 3.8 5.0</size></box></geometry></collision><visual name="visual"><geometry><box><size>0.45 3.8 5.0</size></box></geometry><material><ambient>0.24 0.24 0.26 1</ambient><diffuse>0.42 0.42 0.46 1</diffuse></material></visual></link>
+      <link name="side_fin_b"><pose>-1.55 0.7 -1.0 0 0 0</pose><collision name="collision"><geometry><box><size>0.35 2.0 3.2</size></box></geometry></collision><visual name="visual"><geometry><box><size>0.35 2.0 3.2</size></box></geometry><material><ambient>0.30 0.18 0.14 1</ambient><diffuse>0.55 0.30 0.22 1</diffuse></material></visual></link>
+    </model>
+
     <model name="bollard_cluster_01"><static>true</static><pose>-26 6 0 0 0 0</pose><link name="b1"><pose>0 0 0.45 0 0 0</pose><collision name="collision"><geometry><cylinder><radius>0.12</radius><length>0.9</length></cylinder></geometry></collision><visual name="visual"><geometry><cylinder><radius>0.12</radius><length>0.9</length></cylinder></geometry><material><ambient>0.75 0.55 0.10 1</ambient><diffuse>0.95 0.72 0.16 1</diffuse></material></visual></link><link name="b2"><pose>0.7 0.25 0.45 0 0 0</pose><collision name="collision"><geometry><cylinder><radius>0.12</radius><length>0.9</length></cylinder></geometry></collision><visual name="visual"><geometry><cylinder><radius>0.12</radius><length>0.9</length></cylinder></geometry><material><ambient>0.75 0.55 0.10 1</ambient><diffuse>0.95 0.72 0.16 1</diffuse></material></visual></link><link name="b3"><pose>1.35 -0.1 0.45 0 0 0</pose><collision name="collision"><geometry><cylinder><radius>0.12</radius><length>0.9</length></cylinder></geometry></collision><visual name="visual"><geometry><cylinder><radius>0.12</radius><length>0.9</length></cylinder></geometry><material><ambient>0.75 0.55 0.10 1</ambient><diffuse>0.95 0.72 0.16 1</diffuse></material></visual></link></model>
     <model name="bollard_cluster_02"><static>true</static><pose>23 13 0 0 0 0</pose><link name="b1"><pose>0 0 0.45 0 0 0</pose><collision name="collision"><geometry><cylinder><radius>0.12</radius><length>0.9</length></cylinder></geometry></collision><visual name="visual"><geometry><cylinder><radius>0.12</radius><length>0.9</length></cylinder></geometry><material><ambient>0.75 0.55 0.10 1</ambient><diffuse>0.95 0.72 0.16 1</diffuse></material></visual></link><link name="b2"><pose>-0.6 0.4 0.45 0 0 0</pose><collision name="collision"><geometry><cylinder><radius>0.12</radius><length>0.9</length></cylinder></geometry></collision><visual name="visual"><geometry><cylinder><radius>0.12</radius><length>0.9</length></cylinder></geometry><material><ambient>0.75 0.55 0.10 1</ambient><diffuse>0.95 0.72 0.16 1</diffuse></material></visual></link><link name="b3"><pose>-1.2 -0.05 0.45 0 0 0</pose><collision name="collision"><geometry><cylinder><radius>0.12</radius><length>0.9</length></cylinder></geometry></collision><visual name="visual"><geometry><cylinder><radius>0.12</radius><length>0.9</length></cylinder></geometry><material><ambient>0.75 0.55 0.10 1</ambient><diffuse>0.95 0.72 0.16 1</diffuse></material></visual></link></model>
 
@@ -311,5 +329,78 @@
     <model name="low_block_01"><static>true</static><pose>-6 -18 0.35 0 0 0.4</pose><link name="block_link"><collision name="collision"><geometry><box><size>2.0 1.2 0.7</size></box></geometry></collision><visual name="visual"><geometry><box><size>2.0 1.2 0.7</size></box></geometry><material><ambient>0.31 0.30 0.28 1</ambient><diffuse>0.48 0.46 0.41 1</diffuse></material></visual></link></model>
     <model name="low_block_02"><static>true</static><pose>9 -23 0.45 0 0 -0.7</pose><link name="block_link"><collision name="collision"><geometry><box><size>2.8 1.6 0.9</size></box></geometry></collision><visual name="visual"><geometry><box><size>2.8 1.6 0.9</size></box></geometry><material><ambient>0.31 0.30 0.28 1</ambient><diffuse>0.48 0.46 0.41 1</diffuse></material></visual></link></model>
     <model name="low_block_03"><static>true</static><pose>18 2 0.40 0 0 0.2</pose><link name="block_link"><collision name="collision"><geometry><box><size>2.4 1.5 0.8</size></box></geometry></collision><visual name="visual"><geometry><box><size>2.4 1.5 0.8</size></box></geometry><material><ambient>0.31 0.30 0.28 1</ambient><diffuse>0.48 0.46 0.41 1</diffuse></material></visual></link></model>
+
+    <!-- Building district around the parking lot. These large asymmetric facades
+         give the frontend tall, persistent scan-to-map constraints outside the
+         dense parking area, so turns do not happen against a mostly flat horizon. -->
+    <model name="north_warehouse_block">
+      <static>true</static>
+      <pose>-18 31 3.0 0 0 0.04</pose>
+      <link name="main_mass">
+        <collision name="collision"><geometry><box><size>22 7 6.0</size></box></geometry></collision>
+        <visual name="visual"><geometry><box><size>22 7 6.0</size></box></geometry>
+          <material><ambient>0.30 0.32 0.34 1</ambient><diffuse>0.50 0.53 0.56 1</diffuse><specular>0.02 0.02 0.02 1</specular></material>
+        </visual>
+      </link>
+      <link name="loading_bay_01"><pose>-6 -3.65 -1.35 0 0 0</pose><collision name="collision"><geometry><box><size>3.0 0.18 2.7</size></box></geometry></collision><visual name="visual"><geometry><box><size>3.0 0.18 2.7</size></box></geometry><material><ambient>0.08 0.09 0.10 1</ambient><diffuse>0.15 0.16 0.18 1</diffuse></material></visual></link>
+      <link name="loading_bay_02"><pose>1 -3.65 -1.35 0 0 0</pose><collision name="collision"><geometry><box><size>3.4 0.18 2.7</size></box></geometry></collision><visual name="visual"><geometry><box><size>3.4 0.18 2.7</size></box></geometry><material><ambient>0.08 0.09 0.10 1</ambient><diffuse>0.15 0.16 0.18 1</diffuse></material></visual></link>
+      <link name="corner_tower"><pose>9.8 2.7 1.2 0 0 0</pose><collision name="collision"><geometry><box><size>2.4 2.4 8.4</size></box></geometry></collision><visual name="visual"><geometry><box><size>2.4 2.4 8.4</size></box></geometry><material><ambient>0.24 0.26 0.29 1</ambient><diffuse>0.40 0.44 0.48 1</diffuse></material></visual></link>
+    </model>
+
+    <model name="east_office_block">
+      <static>true</static>
+      <pose>32 13 4.0 0 0 1.5708</pose>
+      <link name="main_mass">
+        <collision name="collision"><geometry><box><size>24 6 8.0</size></box></geometry></collision>
+        <visual name="visual"><geometry><box><size>24 6 8.0</size></box></geometry>
+          <material><ambient>0.27 0.29 0.31 1</ambient><diffuse>0.46 0.49 0.52 1</diffuse><specular>0.025 0.025 0.025 1</specular></material>
+        </visual>
+      </link>
+      <link name="window_band_01"><pose>-7 -3.08 1.5 0 0 0</pose><visual name="visual"><geometry><box><size>5.0 0.12 0.9</size></box></geometry><material><ambient>0.05 0.10 0.14 1</ambient><diffuse>0.08 0.17 0.23 1</diffuse></material></visual></link>
+      <link name="window_band_02"><pose>0 -3.08 1.5 0 0 0</pose><visual name="visual"><geometry><box><size>4.0 0.12 0.9</size></box></geometry><material><ambient>0.05 0.10 0.14 1</ambient><diffuse>0.08 0.17 0.23 1</diffuse></material></visual></link>
+      <link name="window_band_03"><pose>7 -3.08 1.5 0 0 0</pose><visual name="visual"><geometry><box><size>5.5 0.12 0.9</size></box></geometry><material><ambient>0.05 0.10 0.14 1</ambient><diffuse>0.08 0.17 0.23 1</diffuse></material></visual></link>
+      <link name="side_sign"><pose>10.5 -3.18 -2.1 0 0 0</pose><collision name="collision"><geometry><box><size>3.5 0.16 1.1</size></box></geometry></collision><visual name="visual"><geometry><box><size>3.5 0.16 1.1</size></box></geometry><material><ambient>0.38 0.10 0.08 1</ambient><diffuse>0.70 0.18 0.14 1</diffuse></material></visual></link>
+    </model>
+
+    <model name="south_service_garage">
+      <static>true</static>
+      <pose>10 -32 2.4 0 0 -0.10</pose>
+      <link name="main_mass">
+        <collision name="collision"><geometry><box><size>18 7 4.8</size></box></geometry></collision>
+        <visual name="visual"><geometry><box><size>18 7 4.8</size></box></geometry>
+          <material><ambient>0.32 0.30 0.27 1</ambient><diffuse>0.54 0.50 0.44 1</diffuse></material>
+        </visual>
+      </link>
+      <link name="garage_door_01"><pose>-4.8 3.62 -0.65 0 0 0</pose><collision name="collision"><geometry><box><size>3.5 0.18 2.7</size></box></geometry></collision><visual name="visual"><geometry><box><size>3.5 0.18 2.7</size></box></geometry><material><ambient>0.12 0.12 0.12 1</ambient><diffuse>0.22 0.22 0.22 1</diffuse></material></visual></link>
+      <link name="garage_door_02"><pose>1.2 3.62 -0.65 0 0 0</pose><collision name="collision"><geometry><box><size>4.2 0.18 2.7</size></box></geometry></collision><visual name="visual"><geometry><box><size>4.2 0.18 2.7</size></box></geometry><material><ambient>0.12 0.12 0.12 1</ambient><diffuse>0.22 0.22 0.22 1</diffuse></material></visual></link>
+      <link name="roof_box"><pose>6.5 -1.8 1.0 0 0 0</pose><collision name="collision"><geometry><box><size>3.2 2.5 2.0</size></box></geometry></collision><visual name="visual"><geometry><box><size>3.2 2.5 2.0</size></box></geometry><material><ambient>0.25 0.24 0.22 1</ambient><diffuse>0.42 0.40 0.36 1</diffuse></material></visual></link>
+    </model>
+
+    <model name="west_apartment_row">
+      <static>true</static>
+      <pose>-32 0 3.5 0 0 1.5708</pose>
+      <link name="main_mass">
+        <collision name="collision"><geometry><box><size>28 5.5 7.0</size></box></geometry></collision>
+        <visual name="visual"><geometry><box><size>28 5.5 7.0</size></box></geometry>
+          <material><ambient>0.34 0.31 0.28 1</ambient><diffuse>0.58 0.52 0.46 1</diffuse></material>
+        </visual>
+      </link>
+      <link name="stair_tower"><pose>-11 2.9 0.8 0 0 0</pose><collision name="collision"><geometry><box><size>3.0 2.2 8.6</size></box></geometry></collision><visual name="visual"><geometry><box><size>3.0 2.2 8.6</size></box></geometry><material><ambient>0.28 0.25 0.23 1</ambient><diffuse>0.48 0.42 0.38 1</diffuse></material></visual></link>
+      <link name="balcony_01"><pose>-4 2.95 0.5 0 0 0</pose><collision name="collision"><geometry><box><size>4.0 1.0 0.25</size></box></geometry></collision><visual name="visual"><geometry><box><size>4.0 1.0 0.25</size></box></geometry><material><ambient>0.22 0.22 0.21 1</ambient><diffuse>0.36 0.36 0.34 1</diffuse></material></visual></link>
+      <link name="balcony_02"><pose>4 2.95 0.9 0 0 0</pose><collision name="collision"><geometry><box><size>4.5 1.0 0.25</size></box></geometry></collision><visual name="visual"><geometry><box><size>4.5 1.0 0.25</size></box></geometry><material><ambient>0.22 0.22 0.21 1</ambient><diffuse>0.36 0.36 0.34 1</diffuse></material></visual></link>
+      <link name="balcony_03"><pose>11 2.95 1.3 0 0 0</pose><collision name="collision"><geometry><box><size>3.2 1.0 0.25</size></box></geometry></collision><visual name="visual"><geometry><box><size>3.2 1.0 0.25</size></box></geometry><material><ambient>0.22 0.22 0.21 1</ambient><diffuse>0.36 0.36 0.34 1</diffuse></material></visual></link>
+    </model>
+
+    <model name="small_kiosk_asymmetric">
+      <static>true</static>
+      <pose>27 -27 1.7 0 0 0.72</pose>
+      <link name="body">
+        <collision name="collision"><geometry><box><size>5.2 4.0 3.4</size></box></geometry></collision>
+        <visual name="visual"><geometry><box><size>5.2 4.0 3.4</size></box></geometry>
+          <material><ambient>0.20 0.28 0.24 1</ambient><diffuse>0.34 0.48 0.40 1</diffuse></material>
+        </visual>
+      </link>
+      <link name="awning"><pose>0 -2.3 0.9 0 0 0</pose><collision name="collision"><geometry><box><size>6.8 1.1 0.28</size></box></geometry></collision><visual name="visual"><geometry><box><size>6.8 1.1 0.28</size></box></geometry><material><ambient>0.42 0.18 0.12 1</ambient><diffuse>0.70 0.30 0.20 1</diffuse></material></visual></link>
+    </model>
   </world>
 </sdf>
