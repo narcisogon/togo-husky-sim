@@ -7,6 +7,7 @@ set -u
 export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}"
 export RMW_IMPLEMENTATION="${RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}"
 RELAY_SIM_TF_TO_ROS_TF="${RELAY_SIM_TF_TO_ROS_TF:-false}"
+BRIDGE_SEYOND_TOPICS="${BRIDGE_SEYOND_TOPICS:-false}"
 
 pids=()
 cleanup() {
@@ -28,17 +29,48 @@ start_node() {
   sleep 0.5
 }
 
-start_node "Seyond IMU bridge" \
-  ros2 run ros_gz_bridge parameter_bridge \
-  '/a300_0000/sensors/seyond_robin_w/imu@sensor_msgs/msg/Imu[gz.msgs.IMU'
+topic_has_publishers() {
+  local topic="$1"
+  ros2 topic info "$topic" 2>/dev/null | grep -Eq 'Publisher count: [1-9][0-9]*'
+}
 
-start_node "Seyond LiDAR point bridge" \
-  ros2 run ros_gz_bridge parameter_bridge \
-  '/a300_0000/sensors/seyond_robin_w/scan/points@sensor_msgs/msg/PointCloud2[gz.msgs.PointCloudPacked'
+should_bridge_seyond_topics() {
+  case "${BRIDGE_SEYOND_TOPICS}" in
+    true)
+      return 0
+      ;;
+    false)
+      return 1
+      ;;
+    auto)
+      if topic_has_publishers /a300_0000/sensors/seyond_robin_w/scan/points ||
+         topic_has_publishers /a300_0000/sensors/seyond_robin_w/imu; then
+        echo "Seyond ROS sensor topics already have publishers; skipping duplicate sensor bridges."
+        echo "Set BRIDGE_SEYOND_TOPICS=true to force the legacy bridges."
+        return 1
+      fi
+      return 0
+      ;;
+    *)
+      echo "Unknown BRIDGE_SEYOND_TOPICS=${BRIDGE_SEYOND_TOPICS}; use auto, true, or false." >&2
+      return 1
+      ;;
+  esac
+}
 
-start_node "Seyond LiDAR scan bridge" \
-  ros2 run ros_gz_bridge parameter_bridge \
-  '/a300_0000/sensors/seyond_robin_w/scan@sensor_msgs/msg/LaserScan[gz.msgs.LaserScan'
+if should_bridge_seyond_topics; then
+  start_node "Seyond IMU bridge" \
+    ros2 run ros_gz_bridge parameter_bridge \
+    '/a300_0000/sensors/seyond_robin_w/imu@sensor_msgs/msg/Imu[gz.msgs.IMU'
+
+  start_node "Seyond LiDAR point bridge" \
+    ros2 run ros_gz_bridge parameter_bridge \
+    '/a300_0000/sensors/seyond_robin_w/scan/points@sensor_msgs/msg/PointCloud2[gz.msgs.PointCloudPacked'
+
+  start_node "Seyond LiDAR scan bridge" \
+    ros2 run ros_gz_bridge parameter_bridge \
+    '/a300_0000/sensors/seyond_robin_w/scan@sensor_msgs/msg/LaserScan[gz.msgs.LaserScan'
+fi
 
 
 start_node "Gazebo dynamic pose bridge" \
@@ -65,8 +97,9 @@ start_node "Seyond IMU static TF" \
 echo
 echo "Seyond support is running. Keep this terminal open."
 echo "Checks you can run in another terminal:"
-echo "  timeout 6 ros2 topic hz /a300_0000/sensors/seyond_robin_w/points"
+echo "  timeout 6 ros2 topic hz /a300_0000/sensors/seyond_robin_w/scan/points"
 echo "  timeout 6 ros2 topic hz /a300_0000/sensors/seyond_robin_w/imu"
 echo "  timeout 5 ros2 run tf2_ros tf2_echo base_link seyond_robin_w_lidar_frame"
+echo "Set BRIDGE_SEYOND_TOPICS=true only if the sim is not already bridging LiDAR/IMU."
 echo
 wait

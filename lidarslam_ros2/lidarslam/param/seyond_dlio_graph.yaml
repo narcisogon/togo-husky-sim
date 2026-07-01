@@ -11,12 +11,21 @@ dlio_odom_node:
 
     # Frontend point processing.
     pointcloud/deskew: true
+    # Cap deskew interpolation buckets. The scan still uses per-point timing,
+    # but preprocessing no longer needs one IMU pose for every timestamp group.
+    pointcloud/deskew/maxUniqueTimestamps: 96
     pointcloud/voxelize: true
     map/waitUntilMove: false
     map/dense/filtered: false
-    map/sparse/leafSize: 0.25
+    map/sparse/leafSize: 0.15
     odom/preprocessing/cropBoxFilter/size: 1.0
-    odom/preprocessing/voxelFilter/res: 0.25
+    odom/preprocessing/voxelFilter/res: 0.15
+    # Keep DLIO's built-in full Path quiet. The launch already creates the
+    # lighter /dlio/path_simple visualization path from /dlio/odometry.
+    odom/path/publish: false
+    odom/path/publishEveryN: 5
+    odom/path/maxPoses: 2000
+    odom/path/minDistance: 0.05
 
     # Sim IMU setup. Gazebo is currently Earth gravity.
     imu/calibration: true
@@ -50,7 +59,7 @@ dlio_odom_node:
     odom/gicp/minNumPoints: 64
     odom/gicp/kCorrespondences: 16
     odom/gicp/maxCorrespondenceDistance: 1.0
-    odom/gicp/maxIterations: 48
+    odom/gicp/maxIterations: 32
     odom/gicp/transformationEpsilon: 0.005
     odom/gicp/rotationEpsilon: 0.005
     odom/gicp/initLambdaFactor: 1e-9
@@ -58,17 +67,17 @@ dlio_odom_node:
     # Soft gates for featureless / high-yaw-rate moments. Bad GICP jumps are
     # rejected; during spin guard the frontend advances from the IMU prior
     # instead of letting a bad scan match pull the map sideways.
-    odom/gicp/rejectBadCorrections: false
-    odom/gicp/spinProtection/enabled: false
-    odom/gicp/timingProtection/enabled: false
-    odom/gicp/timingProtection/dropStaleScans: false
+    odom/gicp/rejectBadCorrections: true
+    odom/gicp/spinProtection/enabled: true
+    odom/gicp/timingProtection/enabled: true
+    odom/gicp/timingProtection/dropStaleScans: true
     odom/gicp/freezeOnBadCorrection: false
 
     # Diagnostic guard values stay explicit for quick experiments.
     odom/gicp/maxCorrectionTranslation: 0.35
     odom/gicp/maxCorrectionRotationDeg: 18.0
     odom/gicp/spinProtection/angularRate: 0.30
-    odom/gicp/spinProtection/maxCorrectionTranslation: 0.
+    odom/gicp/spinProtection/maxCorrectionTranslation: 0.008
     odom/gicp/spinProtection/recoveryTranslationStep: 0.006
     odom/gicp/spinProtection/recoveryRotationStepDeg: 6.0
     odom/gicp/spinProtection/useImuPriorOnReject: true
@@ -79,7 +88,15 @@ dlio_odom_node:
     odom/gicp/timingProtection/recoveryRotationStepDeg: 2.0
     odom/gicp/timingProtection/dropImuAgeMs: 220.0
     odom/gicp/timingProtection/dropRejectStreak: 0
-    odom/gicp/timingProtection/maxIterations: 20
+    odom/gicp/timingProtection/maxIterations: 12
+    odom/gicp/adaptiveIterations/enabled: true
+    odom/gicp/adaptiveIterations/weakOverlap: 0.35
+    odom/gicp/adaptiveIterations/weakHessianCondition: 100000.0
+    odom/gicp/adaptiveIterations/slowSolveMs: 25.0
+    odom/gicp/adaptiveIterations/weakMaxIterations: 10
+    odom/gicp/solveTimeBudget/enabled: true
+    odom/gicp/solveTimeBudget/maxMs: 25.0
+    odom/gicp/solveTimeBudget/partialScale: 0.15
     odom/gicp/badCorrectionFreezeStreak: 3
     odom/gicp/badCorrectionRecoveryTranslationStep: 0.04
     odom/gicp/badCorrectionRecoveryRotationStepDeg: 3.0
@@ -90,6 +107,9 @@ dlio_odom_node:
     odom/gicp/badCorrectionVelocityDecay: 0.92
     odom/gicp/badCorrectionVelocityDecayStreak: 8
     odom/gicp/badCorrectionHoldStreak: 0
+    odom/imuBridge/clamp/enabled: true
+    odom/imuBridge/clamp/maxTranslation: 0.08
+    odom/imuBridge/clamp/maxRotationDeg: 5.0
     odom/gicp/quality/usePartialDegenerate: true
     odom/gicp/quality/minOverlap: 0.50
     odom/gicp/quality/degenerateMinOverlap: 0.25
@@ -100,6 +120,16 @@ dlio_odom_node:
     odom/gicp/quality/partialCorrectionScale: 0.20
     odom/gicp/quality/partialMaxTranslation: 1.5
     odom/gicp/quality/partialMaxRotationDeg: 45.0
+    # Local tracking-map protection. Odometry may still publish from IMU/GICP,
+    # but weak/slow/partial registrations are not inserted as keyframes, so one
+    # bad flat-area match cannot poison the map used by future scan matching.
+    odom/keyframe/trustRegistration: true
+    odom/keyframe/trust/minOverlap: 0.78
+    odom/keyframe/trust/maxFitness: 1.2
+    odom/keyframe/trust/maxHessianCondition: 30000.0
+    odom/keyframe/trust/maxSolveTimeMs: 75.0
+    odom/keyframe/trust/minInliers: 850
+    odom/keyframe/trust/allowPartial: false
     # Treat GICP as a correction to the IMU-propagated pose. If scan matching
     # proposes a large innovation, apply only a small part instead of replacing
     # the IMU prior with an ambiguous flat-area alignment.
@@ -116,14 +146,20 @@ dlio_odom_node:
     odom/gicp/recovery/enabled: true
     odom/gicp/recovery/rejectStreak: 5
     odom/gicp/recovery/maxCorrespondenceDistance: 2.0
-    odom/gicp/recovery/maxIterations: 48
+    odom/gicp/recovery/maxIterations: 16
     odom/gicp/recovery/acceptTranslation: 0.6
     odom/gicp/recovery/acceptRotationDeg: 15.0
     odom/gicp/recovery/minOverlap: 0.45
     odom/gicp/recovery/maxFitness: 3.0
     odom/gicp/recovery/attemptSpacing: 6
     odom/gicp/recovery/skipWhenTimingActive: true
+    odom/gicp/recovery/timeBudgetMs: 60.0
     odom/gicp/recovery/yawOffsetsDeg: [0.0, -8.0, 8.0]
+    odom/gicp/recovery/ndt/enabled: false
+    odom/gicp/recovery/ndt/resolution: 1.0
+    odom/gicp/recovery/ndt/stepSize: 0.1
+    odom/gicp/recovery/ndt/transformationEpsilon: 0.01
+    odom/gicp/recovery/ndt/maxIterations: 10
 
 dlio_map_node:
   ros__parameters:

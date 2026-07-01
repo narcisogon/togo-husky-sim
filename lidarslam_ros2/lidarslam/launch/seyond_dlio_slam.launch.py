@@ -59,7 +59,7 @@ def generate_launch_description():
             ('imu', '/a300_0000/sensors/seyond_robin_w/imu'),
             ('odom', '/dlio/odometry'),
             ('pose', '/dlio/pose'),
-            ('path', '/dlio/path'),
+            ('path', '/dlio/path_raw'),
             ('kf_pose', '/dlio/keyframes'),
             ('kf_cloud', '/dlio/keyframe_cloud'),
             ('deskewed', '/dlio/deskewed'),

@@ -9,6 +9,7 @@
     odom/odom_frame: odom
 
     pointcloud/deskew: true
+    pointcloud/deskew/maxUniqueTimestamps: 96
     pointcloud/voxelize: true
 
     imu/calibration: true
@@ -35,6 +36,12 @@
     map/waitUntilMove: false
     map/dense/filtered: false
     map/sparse/leafSize: 0.25
+    # Keep DLIO's built-in full Path quiet. Use /dlio/path_simple from the
+    # launch helper for RViz instead.
+    odom/path/publish: false
+    odom/path/publishEveryN: 5
+    odom/path/maxPoses: 2000
+    odom/path/minDistance: 0.05
 
     odom/preprocessing/cropBoxFilter/size: 1.0
     odom/preprocessing/voxelFilter/res: 0.25
@@ -48,7 +55,7 @@
     odom/gicp/minNumPoints: 64
     odom/gicp/kCorrespondences: 16
     odom/gicp/maxCorrespondenceDistance: 1.0
-    odom/gicp/maxIterations: 48
+    odom/gicp/maxIterations: 32
     odom/gicp/transformationEpsilon: 0.005
     odom/gicp/rotationEpsilon: 0.005
     odom/gicp/initLambdaFactor: 1e-9
@@ -70,8 +77,16 @@
     odom/gicp/timingProtection/dropStaleScans: true
     odom/gicp/timingProtection/dropImuAgeMs: 120.0
     odom/gicp/timingProtection/dropRejectStreak: 0
-    odom/gicp/timingProtection/maxIterations: 16
-    odom/gicp/freezeOnBadCorrection: true
+    odom/gicp/timingProtection/maxIterations: 12
+    odom/gicp/adaptiveIterations/enabled: true
+    odom/gicp/adaptiveIterations/weakOverlap: 0.35
+    odom/gicp/adaptiveIterations/weakHessianCondition: 100000.0
+    odom/gicp/adaptiveIterations/slowSolveMs: 25.0
+    odom/gicp/adaptiveIterations/weakMaxIterations: 10
+    odom/gicp/solveTimeBudget/enabled: true
+    odom/gicp/solveTimeBudget/maxMs: 25.0
+    odom/gicp/solveTimeBudget/partialScale: 0.15
+    odom/gicp/freezeOnBadCorrection: false
     odom/gicp/badCorrectionFreezeStreak: 14
     odom/gicp/badCorrectionRecoveryTranslationStep: 0.04
     odom/gicp/badCorrectionRecoveryRotationStepDeg: 3.0
@@ -79,6 +94,9 @@
     odom/gicp/badCorrectionVelocityDecay: 0.92
     odom/gicp/badCorrectionVelocityDecayStreak: 8
     odom/gicp/badCorrectionHoldStreak: 0
+    odom/imuBridge/clamp/enabled: true
+    odom/imuBridge/clamp/maxTranslation: 0.08
+    odom/imuBridge/clamp/maxRotationDeg: 5.0
     odom/gicp/quality/usePartialDegenerate: true
     odom/gicp/quality/minOverlap: 0.50
     odom/gicp/quality/degenerateMinOverlap: 0.25
@@ -89,6 +107,13 @@
     odom/gicp/quality/partialCorrectionScale: 0.20
     odom/gicp/quality/partialMaxTranslation: 1.5
     odom/gicp/quality/partialMaxRotationDeg: 45.0
+    odom/keyframe/trustRegistration: true
+    odom/keyframe/trust/minOverlap: 0.78
+    odom/keyframe/trust/maxFitness: 1.2
+    odom/keyframe/trust/maxHessianCondition: 30000.0
+    odom/keyframe/trust/maxSolveTimeMs: 75.0
+    odom/keyframe/trust/minInliers: 850
+    odom/keyframe/trust/allowPartial: false
     odom/gicp/innovationGate/enabled: true
     odom/gicp/innovationGate/partialScale: 0.20
     odom/gicp/innovationGate/maxTranslation: 0.08
@@ -99,11 +124,17 @@
     odom/gicp/recovery/enabled: true
     odom/gicp/recovery/rejectStreak: 5
     odom/gicp/recovery/maxCorrespondenceDistance: 2.0
-    odom/gicp/recovery/maxIterations: 48
+    odom/gicp/recovery/maxIterations: 16
     odom/gicp/recovery/acceptTranslation: 0.6
     odom/gicp/recovery/acceptRotationDeg: 15.0
     odom/gicp/recovery/minOverlap: 0.45
     odom/gicp/recovery/maxFitness: 3.0
     odom/gicp/recovery/attemptSpacing: 6
     odom/gicp/recovery/skipWhenTimingActive: true
+    odom/gicp/recovery/timeBudgetMs: 60.0
     odom/gicp/recovery/yawOffsetsDeg: [0.0, -8.0, 8.0]
+    odom/gicp/recovery/ndt/enabled: false
+    odom/gicp/recovery/ndt/resolution: 1.0
+    odom/gicp/recovery/ndt/stepSize: 0.1
+    odom/gicp/recovery/ndt/transformationEpsilon: 0.01
+    odom/gicp/recovery/ndt/maxIterations: 10
