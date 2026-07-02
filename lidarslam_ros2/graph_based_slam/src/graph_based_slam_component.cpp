@@ -269,6 +269,10 @@ GraphBasedSlamComponent::GraphBasedSlamComponent(const rclcpp::NodeOptions & opt
   get_parameter("loop_max_translation_delta_descriptor", loop_max_translation_delta_descriptor_);
   declare_parameter("loop_max_rotation_delta_deg_descriptor", -1.0);
   get_parameter("loop_max_rotation_delta_deg_descriptor", loop_max_rotation_delta_deg_descriptor_);
+  declare_parameter("loop_z_preshift_enabled", false);
+  get_parameter("loop_z_preshift_enabled", loop_z_preshift_enabled_);
+  declare_parameter("loop_z_preshift_max_m", 5.0);
+  get_parameter("loop_z_preshift_max_m", loop_z_preshift_max_m_);
   declare_parameter("num_adjacent_pose_cnstraints", 5);
   get_parameter("num_adjacent_pose_cnstraints", num_adjacent_pose_cnstraints_);
   declare_parameter("use_save_map_in_loop", true);
@@ -309,6 +313,8 @@ GraphBasedSlamComponent::GraphBasedSlamComponent(const rclcpp::NodeOptions & opt
   get_parameter(
     "adjacent_edge_info_auto_scale_target_nis_rot",
     adjacent_edge_info_auto_scale_target_nis_rot_);
+  declare_parameter("adjacent_edge_info_weight_z_scale", 1.0);
+  get_parameter("adjacent_edge_info_weight_z_scale", adjacent_edge_info_weight_z_scale_);
   // Trans/rot weights default to the unified weight when negative (i.e., user
   // has not provided an explicit per-block override). This keeps the split
   // mode safe to enable on existing YAMLs that only set
@@ -691,6 +697,13 @@ GraphBasedSlamComponent::GraphBasedSlamComponent(const rclcpp::NodeOptions & opt
       loop_max_rotation_delta_deg_descriptor_);
     loop_max_rotation_delta_deg_descriptor_ = -1.0;
   }
+  if (loop_z_preshift_max_m_ <= 0.0) {
+    RCLCPP_WARN(
+      get_logger(),
+      "loop_z_preshift_max_m must be > 0, resetting %.3f to 5.0",
+      loop_z_preshift_max_m_);
+    loop_z_preshift_max_m_ = 5.0;
+  }
   if (num_adjacent_pose_cnstraints_ < 1) {
     RCLCPP_WARN(
       get_logger(),
@@ -713,6 +726,13 @@ GraphBasedSlamComponent::GraphBasedSlamComponent(const rclcpp::NodeOptions & opt
   }
   if (adjacent_edge_info_auto_scale_target_nis_trans_ <= 0.0) {
     adjacent_edge_info_auto_scale_target_nis_trans_ = 3.0;
+  }
+  if (adjacent_edge_info_weight_z_scale_ <= 0.0) {
+    RCLCPP_WARN(
+      get_logger(),
+      "adjacent_edge_info_weight_z_scale must be positive, resetting %.3f to 1.0",
+      adjacent_edge_info_weight_z_scale_);
+    adjacent_edge_info_weight_z_scale_ = 1.0;
   }
   if (adjacent_edge_info_auto_scale_target_nis_rot_ <= 0.0) {
     adjacent_edge_info_auto_scale_target_nis_rot_ = 3.0;
@@ -1079,8 +1099,13 @@ GraphBasedSlamComponent::GraphBasedSlamComponent(const rclcpp::NodeOptions & opt
     loop_max_translation_delta_descriptor_ << std::endl;
   std::cout << "loop_max_rotation_delta_deg_descriptor[deg]:" <<
     loop_max_rotation_delta_deg_descriptor_ << std::endl;
+  std::cout << "loop_z_preshift_enabled:" << std::boolalpha <<
+    loop_z_preshift_enabled_ << std::endl;
+  std::cout << "loop_z_preshift_max_m:" << loop_z_preshift_max_m_ << std::endl;
   std::cout << "num_adjacent_pose_cnstraints:" << num_adjacent_pose_cnstraints_ << std::endl;
   std::cout << "adjacent_edge_info_weight:" << adjacent_edge_info_weight_ << std::endl;
+  std::cout << "adjacent_edge_info_weight_z_scale:" <<
+    adjacent_edge_info_weight_z_scale_ << std::endl;
   std::cout << "adjacent_edge_info_auto_scale:" << std::boolalpha
             << adjacent_edge_info_auto_scale_ << std::endl;
   if (adjacent_edge_info_auto_scale_) {
@@ -1638,6 +1663,27 @@ const char * jsonBool(bool value)
 {
   return value ? "true" : "false";
 }
+
+// Robust ground height: the z of the lowest decile of points. Used to
+// pre-shift a loop candidate's NDT/GICP initial guess in z before
+// registration -- odometry drift is typically worst in z (least observable
+// axis for ground vehicles), so the pose-composed initial guess can be off
+// by the full accumulated drift with no correction. Registration's
+// correspondence search only reaches so far; a bad z guess alone can be
+// enough to keep the correct alignment out of reach. nth_element on a copy
+// keeps this O(n) without disturbing the caller's point order.
+float robustGroundZ(const pcl::PointCloud<pcl::PointXYZI> & cloud)
+{
+  if (cloud.empty()) {return 0.0f;}
+  std::vector<float> zs;
+  zs.reserve(cloud.points.size());
+  for (const auto & p : cloud.points) {
+    zs.push_back(p.z);
+  }
+  const std::size_t k = std::min(zs.size() - 1, zs.size() / 10);
+  std::nth_element(zs.begin(), zs.begin() + k, zs.end());
+  return zs[k];
+}
 }  // namespace
 
 void GraphBasedSlamComponent::searchLoop()
@@ -1661,8 +1707,24 @@ void GraphBasedSlamComponent::searchLoop()
         new pcl::PointCloud<pcl::PointXYZI>);
       Eigen::Affine3d reference_affine;
       tf2::fromMsg(map_array_msg.submaps[ref_idx].pose, reference_affine);
-      for (int k = 0; k < search_submap_num_ && (ref_idx - k) >= 0; ++k) {
-        const int src_idx = ref_idx - k;
+      // Symmetric window, matching the registration target-side aggregation
+      // below (see the loop candidate registration loop). This used to be
+      // trailing-only (k = 0..search_submap_num_-1, ref_idx - k), which is
+      // fine for a freshly-added submap (no future submaps exist yet to
+      // include either way) but silently starves descriptor building for
+      // OLDER submap indices reprocessed later (e.g. multiple submaps
+      // arriving in one searchLoop() batch) of geometry that's already in
+      // map_array_msg on the other side of ref_idx -- exactly the "source
+      // window extends away from the overlap region on a reverse pass"
+      // asymmetry. When the newer side genuinely doesn't exist yet, this is
+      // a no-op (src_idx >= num_submaps is skipped), so it only ever adds
+      // coverage, never removes it.
+      const int num_submaps_snapshot = static_cast<int>(map_array_msg.submaps.size());
+      for (int offset = -search_submap_num_; offset <= search_submap_num_; ++offset) {
+        const int src_idx = ref_idx + offset;
+        if (src_idx < 0 || src_idx >= num_submaps_snapshot) {
+          continue;
+        }
         pcl::PointCloud<pcl::PointXYZI>::Ptr cloud;
         if (use_pcd_cache_) {
           cloud = loadSubmapFromPCD(src_idx);
@@ -1816,8 +1878,23 @@ void GraphBasedSlamComponent::searchLoopForLatest(
     new pcl::PointCloud<pcl::PointXYZI>);
   pcl::PointCloud<pcl::PointXYZI>::Ptr latest_submap_cloud_local_bbs_ptr(
     new pcl::PointCloud<pcl::PointXYZI>);
-  for (int k = 0; k < search_submap_num_ && (latest_idx - k) >= 0; k++) {
-    int src_idx = latest_idx - k;
+  // Symmetric window (was trailing-only: k = 0..search_submap_num_-1,
+  // latest_idx - k). In deterministic_loop_scheduling_ mode, latest_idx here
+  // can be an older submap index with genuinely newer submaps already
+  // present in this map_array_msg snapshot -- a trailing-only source window
+  // extends away from the true overlap region on a reverse-direction pass,
+  // while the registration target-side aggregation (search_submap_num_
+  // offset loop later in this function) already uses a symmetric window.
+  // Same no-op-when-absent property as the descriptor-DB-build fix above:
+  // when the newer side doesn't exist yet (the common non-deterministic
+  // case, latest_idx == num_submaps-1), this only adds coverage, never
+  // removes it.
+  for (int offset = -search_submap_num_; offset <= search_submap_num_; ++offset) {
+    const int src_idx = latest_idx + offset;
+    if (src_idx < 0 || src_idx >= num_submaps) {
+      continue;
+    }
+    const int k = std::abs(offset);
     const auto & src_submap = map_array_msg.submaps[src_idx];
     pcl::PointCloud<pcl::PointXYZI>::Ptr src_cloud;
     if (use_pcd_cache_) {
@@ -1961,7 +2038,7 @@ void GraphBasedSlamComponent::searchLoopForLatest(
   if (use_scan_context_ && scan_context_db_.size() > ScanContext::EXCLUDE_RECENT) {
     const auto scan_context_query_start = std::chrono::steady_clock::now();
     const auto sc_matches = scan_context_db_.queryTopMatchesWithYaw(
-      scan_context_db_.descriptors.back(),
+      scan_context_db_.descriptors[latest_idx],
       max_loop_candidate_count_,
       ScanContext::NUM_CANDIDATES,
       ScanContext::EXCLUDE_RECENT,
@@ -2042,7 +2119,7 @@ void GraphBasedSlamComponent::searchLoopForLatest(
       }
     } else if (debug_flag_) {
       auto [sc_idx, sc_dist] = scan_context_db_.query(
-        scan_context_db_.descriptors.back(),
+        scan_context_db_.descriptors[latest_idx],
         ScanContext::NUM_CANDIDATES,
         ScanContext::EXCLUDE_RECENT,
         std::numeric_limits<double>::max());
@@ -2061,7 +2138,7 @@ void GraphBasedSlamComponent::searchLoopForLatest(
       publishLoopDiagnostic(diag.str());
     } else {
       auto [sc_idx, sc_dist] = scan_context_db_.query(
-        scan_context_db_.descriptors.back(),
+        scan_context_db_.descriptors[latest_idx],
         ScanContext::NUM_CANDIDATES,
         ScanContext::EXCLUDE_RECENT,
         std::numeric_limits<double>::max());
@@ -2121,7 +2198,7 @@ void GraphBasedSlamComponent::searchLoopForLatest(
         mv_cfg.occupancy_eps =
           static_cast<float>(bev_mutual_visibility_occupancy_eps_);
         const auto fov = graphslam::bev::mutualVisibilityWithYawSearch(
-          bev_descriptor_db_.descriptors.back(),
+          bev_descriptor_db_.descriptors[latest_idx],
           bev_descriptor_db_.descriptors[bev_idx],
           bev_idx,
           bev_descriptor_yaw_bins_,
@@ -2132,7 +2209,7 @@ void GraphBasedSlamComponent::searchLoopForLatest(
         bev_match.yaw_rad = fov.yaw_rad;
       } else {
         bev_match = SubmapBEVDescriptor::distanceWithAlignment(
-          bev_descriptor_db_.descriptors.back(),
+          bev_descriptor_db_.descriptors[latest_idx],
           bev_descriptor_db_.descriptors[bev_idx],
           bev_idx,
           bev_descriptor_yaw_bins_);
@@ -2369,7 +2446,7 @@ void GraphBasedSlamComponent::searchLoopForLatest(
       }
 
       const double solid_similarity = SolidDescriptor::loopSimilarity(
-        solid_descriptor_db_.descriptors.back(),
+        solid_descriptor_db_.descriptors[latest_idx],
         solid_descriptor_db_.descriptors[solid_idx]);
       if (solid_similarity > best_solid_similarity) {
         best_solid_similarity = solid_similarity;
@@ -2388,7 +2465,7 @@ void GraphBasedSlamComponent::searchLoopForLatest(
       }
 
       double solid_yaw_rad = SolidDescriptor::poseYawRad(
-        solid_descriptor_db_.descriptors.back(),
+        solid_descriptor_db_.descriptors[latest_idx],
         solid_descriptor_db_.descriptors[solid_idx]);
       while (solid_yaw_rad > M_PI) {
         solid_yaw_rad -= 2.0 * M_PI;
@@ -2613,7 +2690,7 @@ void GraphBasedSlamComponent::searchLoopForLatest(
           mv_cfg.occupancy_eps =
             static_cast<float>(bev_mutual_visibility_occupancy_eps_);
           const auto fov = graphslam::bev::mutualVisibilityWithYawSearch(
-            bev_descriptor_db_.descriptors.back(),
+            bev_descriptor_db_.descriptors[latest_idx],
             bev_descriptor_db_.descriptors[chosen_submap_id],
             chosen_submap_id,
             bev_descriptor_yaw_bins_,
@@ -2789,13 +2866,17 @@ void GraphBasedSlamComponent::searchLoopForLatest(
         (candidate_affine.matrix() * yaw_correction.matrix() * latest_affine.inverse().matrix()).
         cast<float>();
     }
+    pcl::PointCloud<pcl::PointXYZI>::ConstPtr registration_source;
+    pcl::PointCloud<pcl::PointXYZI>::ConstPtr registration_target;
     if (candidate.source == LoopCandidate::Source::SCAN_CONTEXT) {
-      registration_->setInputSource(filtered_source_sc);
-      registration_->setInputTarget(filtered_clouds_sc_ptr);
+      registration_source = filtered_source_sc;
+      registration_target = filtered_clouds_sc_ptr;
     } else {
-      registration_->setInputSource(filtered_source);
-      registration_->setInputTarget(filtered_clouds_ptr);
+      registration_source = filtered_source;
+      registration_target = filtered_clouds_ptr;
     }
+    registration_->setInputSource(registration_source);
+    registration_->setInputTarget(registration_target);
     if (candidate.source == LoopCandidate::Source::SCAN_CONTEXT && use_3d_bbs_for_scan_context_) {
       pcl::VoxelGrid<pcl::PointXYZI> three_d_bbs_voxelgrid;
       three_d_bbs_voxelgrid.setLeafSize(
@@ -2849,6 +2930,24 @@ void GraphBasedSlamComponent::searchLoopForLatest(
             three_d_bbs_target->size());
         }
       }
+    }
+    if (loop_z_preshift_enabled_ && !used_3d_bbs &&
+      candidate.source != LoopCandidate::Source::DISTANCE)
+    {
+      // Odometry drift is typically worst in z (the least-observable axis
+      // for a ground vehicle), so the pose-composed initial_guess above can
+      // carry the full accumulated z error into registration with no
+      // correction -- and NDT/GICP's correspondence search only reaches so
+      // far, so a bad z guess alone can keep the correct alignment out of
+      // reach even when xy/yaw are close. Pre-shift z using robust ground
+      // height (10th-percentile z) of source-in-target-frame vs target,
+      // clamped so a bad estimate can't inject a wild jump.
+      pcl::PointCloud<pcl::PointXYZI> source_in_target_frame;
+      pcl::transformPointCloud(*registration_source, source_in_target_frame, initial_guess);
+      const float z_shift = robustGroundZ(*registration_target) -
+        robustGroundZ(source_in_target_frame);
+      const float clamp = static_cast<float>(loop_z_preshift_max_m_);
+      initial_guess(2, 3) += std::max(-clamp, std::min(clamp, z_shift));
     }
     const auto registration_start = std::chrono::steady_clock::now();
     if (candidate.source != LoopCandidate::Source::DISTANCE || used_3d_bbs) {
@@ -3222,6 +3321,10 @@ void GraphBasedSlamComponent::doPoseAdjustment(
           const double edge_weight = adjacent_edge_info_weight_ / sep_d;
           info_mat = Eigen::Matrix<double, 6, 6>::Identity() * edge_weight;
         }
+        // Neither branch above distinguishes z from xy within translation --
+        // scale just the z diagonal entry (index 2) relative to whatever
+        // weight was just set. 1.0 default = no change either branch.
+        info_mat(2, 2) *= adjacent_edge_info_weight_z_scale_;
         g2o::EdgeSE3 * edge_se3 = new g2o::EdgeSE3();
         edge_se3->setMeasurement(relative_pose);
         edge_se3->setInformation(info_mat);

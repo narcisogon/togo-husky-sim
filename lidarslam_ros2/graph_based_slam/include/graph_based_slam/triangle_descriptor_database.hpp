@@ -443,28 +443,36 @@ inline LoopCandidate findLoopCandidate(
     [](const Pair & a, const Pair & b) {return a.largest_edge > b.largest_edge;});
   const int eval_n = std::min<int>(verify_cfg.max_pairs, static_cast<int>(pairs.size()));
 
-  int best_inliers = 0;
-  Eigen::Matrix4f best_T = Eigen::Matrix4f::Identity();
+  // Precompute each pair's SE(3) hypothesis once instead of recomputing it
+  // inside the inner consensus loop -- the old code called
+  // estimateRigidFromTriangle (an SVD) up to eval_n times per outer
+  // iteration, i.e. O(eval_n^2) SVDs where O(eval_n) suffices. With
+  // max_pairs = 64 that's 64x fewer SVDs, and it's what makes raising
+  // verify_top_k / max_pairs for permissive keypoint modes (surface_saliency)
+  // cheap rather than quadratically more expensive.
+  std::vector<Eigen::Matrix4f> hypotheses(static_cast<std::size_t>(eval_n));
   for (int i = 0; i < eval_n; ++i) {
     std::array<Eigen::Vector3f, 3> src;
     std::array<Eigen::Vector3f, 3> dst;
     detail::packTrianglePair(*pairs[i].query_tri, query_keypoints, *pairs[i].db_entry, src, dst);
-    const Eigen::Matrix4f T_i = estimateRigidFromTriangle(src, dst);
+    hypotheses[i] = estimateRigidFromTriangle(src, dst);
+  }
+
+  int best_inliers = 0;
+  Eigen::Matrix4f best_T = Eigen::Matrix4f::Identity();
+  for (int i = 0; i < eval_n; ++i) {
     int inliers = 0;
     for (int j = 0; j < eval_n; ++j) {
-      std::array<Eigen::Vector3f, 3> sj;
-      std::array<Eigen::Vector3f, 3> dj;
-      detail::packTrianglePair(*pairs[j].query_tri, query_keypoints, *pairs[j].db_entry, sj, dj);
-      const Eigen::Matrix4f T_j = estimateRigidFromTriangle(sj, dj);
       if (detail::transformAgrees(
-          T_i, T_j, verify_cfg.inlier_translation_m, verify_cfg.inlier_rotation_deg))
+          hypotheses[i], hypotheses[j], verify_cfg.inlier_translation_m,
+          verify_cfg.inlier_rotation_deg))
       {
         ++inliers;
       }
     }
     if (inliers > best_inliers) {
       best_inliers = inliers;
-      best_T = T_i;
+      best_T = hypotheses[i];
     }
   }
 
@@ -477,14 +485,14 @@ inline LoopCandidate findLoopCandidate(
     all_src.reserve(static_cast<std::size_t>(best_inliers) * 3);
     all_dst.reserve(static_cast<std::size_t>(best_inliers) * 3);
     for (int j = 0; j < eval_n; ++j) {
-      std::array<Eigen::Vector3f, 3> sj;
-      std::array<Eigen::Vector3f, 3> dj;
-      detail::packTrianglePair(
-        *pairs[j].query_tri, query_keypoints, *pairs[j].db_entry, sj, dj);
-      const Eigen::Matrix4f T_j = estimateRigidFromTriangle(sj, dj);
       if (detail::transformAgrees(
-          best_T, T_j, verify_cfg.inlier_translation_m, verify_cfg.inlier_rotation_deg))
+          best_T, hypotheses[j], verify_cfg.inlier_translation_m,
+          verify_cfg.inlier_rotation_deg))
       {
+        std::array<Eigen::Vector3f, 3> sj;
+        std::array<Eigen::Vector3f, 3> dj;
+        detail::packTrianglePair(
+          *pairs[j].query_tri, query_keypoints, *pairs[j].db_entry, sj, dj);
         for (int k = 0; k < 3; ++k) {
           all_src.push_back(sj[k]);
           all_dst.push_back(dj[k]);

@@ -231,6 +231,13 @@ private:
     // -1.0 = disabled / fall back to the generic cap.
     double loop_max_translation_delta_descriptor_ {-1.0};
     double loop_max_rotation_delta_deg_descriptor_ {-1.0};
+    // Pre-shift the NDT/GICP initial guess in z using robust ground height
+    // before registration (non-DISTANCE candidates only, skipped when 3D-BBS
+    // already localized). Off by default so existing tuned baselines
+    // (NTU VIRAL/MID-360/indoor) stay bit-for-bit unchanged; opt in for
+    // scenes with significant odometry z drift.
+    bool loop_z_preshift_enabled_ {false};
+    double loop_z_preshift_max_m_ {5.0};
     // Deterministic loop scheduling (opt-in, v0.4 D1). When false (default),
     // searchLoop queries only the single latest submap per timer tick — the
     // historical wall-clock-driven behaviour, whose (query, db) pair set depends
@@ -268,6 +275,16 @@ private:
     double adjacent_edge_info_weight_rot_ {-1.0};
     double adjacent_edge_info_auto_scale_target_nis_trans_ {3.0};
     double adjacent_edge_info_auto_scale_target_nis_rot_ {3.0};
+    // Neither the unified scalar path nor the split trans/rot path above
+    // distinguish z from xy within the translation block -- x/y/z all get
+    // the same weight, even though z is typically the least-observable axis
+    // for a ground vehicle and odometry drift concentrates there. This
+    // multiplies the (2,2) (z) diagonal entry by this factor relative to
+    // whatever w_trans/edge_weight would otherwise apply. 1.0 = no change
+    // (default, preserves existing tuned baselines); < 1.0 trusts adjacent
+    // z odometry less, letting loop-closure z corrections propagate through
+    // the chain instead of being fought by an overconfident z prior.
+    double adjacent_edge_info_weight_z_scale_ {1.0};
 
     bool initial_map_array_received_ {false};
     bool is_map_array_updated_ {false};

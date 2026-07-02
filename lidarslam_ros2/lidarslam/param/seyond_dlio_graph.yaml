@@ -237,14 +237,28 @@ graph_based_slam:
     loop_max_rotation_delta_deg: 45.0
     loop_max_translation_delta_descriptor: 4.0
     loop_max_rotation_delta_deg_descriptor: 20.0
+    # Pre-shift the NDT initial guess in z using robust ground height before
+    # registration -- odometry drift concentrates in z (least-observable axis
+    # for a ground vehicle), so the pose-composed guess can otherwise carry
+    # the full accumulated z error into registration with no correction.
+    # max_m is a safety clamp, not a target -- watch loop_diagnostics for
+    # whether it's actually clamping in a way that looks wrong.
+    loop_z_preshift_enabled: true
+    loop_z_preshift_max_m: 5.0
     adjacent_edge_info_weight: 1000.0
+    # Trust the z-component of adjacent odometry edges ~3x less than xy, so
+    # an accepted loop-closure z correction can actually propagate through
+    # the graph instead of being fought by an overconfident z prior in the
+    # chain. STARTING VALUE -- go lower (e.g. 0.1) if z is still resisted
+    # after a loop closure, back toward 1.0 if xy gets sloppy as a side effect.
+    adjacent_edge_info_weight_z_scale: 0.3
     loop_edge_info_weight: 200.0
     loop_edge_robust_kernel_delta: 1.0
 
     # Descriptors. Scan Context is off here so the triangle/surface_saliency
     # path below is the sole loop-closure source for testing it in isolation
     # -- flip use_scan_context back to true to fuse both once validated.
-    use_scan_context: false
+    use_scan_context: true
     scan_context_threshold: 0.30
     use_bev_descriptor: false
     use_solid_descriptor: false
