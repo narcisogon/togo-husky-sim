@@ -148,6 +148,19 @@ private:
   nav_msgs::msg::Path path_ros;
   geometry_msgs::msg::PoseArray kf_pose_ros;
 
+  // path_ros.poses/kf_pose_ros.poses previously grew unboundedly and were
+  // republished in full every tick. odom/path/publish, publishEveryN,
+  // maxPoses, minDistance were present in yaml configs but never actually
+  // declared/read anywhere in this code -- they did nothing. Now wired up.
+  bool path_publish_ {true};
+  int path_publish_every_n_ {1};
+  int path_max_poses_ {2000};
+  double path_min_distance_ {0.0};
+  int path_pose_counter_ {0};
+  Eigen::Vector3f path_last_pushed_p_ {Eigen::Vector3f::Zero()};
+  bool path_has_last_pushed_ {false};
+  static constexpr size_t kMaxKeyframePoses = 5000;
+
   // Flags
   std::atomic<bool> dlio_initialized;
   std::atomic<bool> first_valid_scan;
@@ -165,8 +178,16 @@ private:
   std::thread debug_thread;
 
   // Trajectory
-  std::vector<std::pair<Eigen::Vector3f, Eigen::Quaternionf>> trajectory;
+  // Bounded so long runs don't grow this without limit; the debug() report
+  // used to rescan the entire vector every tick to derive length_traversed.
+  // That total is now tracked incrementally at the push site instead (see
+  // length_traversed_prev_p_/length_traversed_has_prev_ below), so bounding
+  // this buffer doesn't turn "distance traveled" into a windowed
+  // approximation -- it stays a true cumulative total.
+  boost::circular_buffer<std::pair<Eigen::Vector3f, Eigen::Quaternionf>> trajectory;
   double length_traversed;
+  Eigen::Vector3f length_traversed_prev_p_ {Eigen::Vector3f::Zero()};
+  bool length_traversed_has_prev_ {false};
 
   // Keyframes
   std::vector<std::pair<std::pair<Eigen::Vector3f, Eigen::Quaternionf>,
@@ -222,9 +243,12 @@ private:
   double scan_stamp;
   double prev_scan_stamp;
   double scan_dt;
-  std::vector<double> comp_times;
-  std::vector<double> imu_rates;
-  std::vector<double> lidar_rates;
+  // Bounded (previously unbounded std::vector): debug() reads these with
+  // std::accumulate/std::max_element every tick, so unbounded growth meant
+  // O(n) work per debug print that got slower forever on long runs.
+  boost::circular_buffer<double> comp_times;
+  boost::circular_buffer<double> imu_rates;
+  boost::circular_buffer<double> lidar_rates;
 
   double first_scan_stamp;
   double elapsed_time;
@@ -319,7 +343,7 @@ private:
   }; Metrics metrics;
 
   std::string cpu_type;
-  std::vector<double> cpu_percents;
+  boost::circular_buffer<double> cpu_percents;  // bounded, see comp_times comment
   clock_t lastCPU, lastSysCPU, lastUserCPU;
   int numProcessors;
   double last_debug_print_time_;
@@ -369,6 +393,11 @@ private:
   std::mutex diagnostic_history_mutex_;
   std::string diagnostic_history_file_;
   std::atomic<bool> diagnostic_history_printed_;
+  // Kept open for the node's lifetime instead of opening/closing per event
+  // (appendDiagnosticEventToFile used to construct a fresh ofstream on every
+  // call -- a syscall-heavy operation landing in the hot path during exactly
+  // the reject storms where compute headroom matters most).
+  std::ofstream diagnostic_history_stream_;
 
   // Parameters
   std::string version_;
@@ -379,6 +408,14 @@ private:
   double diagnostic_imu_age_warning_ms_;
   int diagnostic_keyframe_warning_count_;
   int diagnostic_submap_warning_points_;
+  // imuMeasFromTimeRange's cv_imu_stamp.wait() previously had no timeout --
+  // if the IMU stream stalled (sim pause, driver hiccup, bag end), the lidar
+  // callback would block forever holding its callback group, killing the
+  // node with no diagnostic. Now bounded by this and logged on timeout.
+  double diagnostic_imu_wait_timeout_ms_;
+  // Bounds trajectory/comp_times/imu_rates/lidar_rates/cpu_percents (see
+  // their declarations) -- previously unbounded std::vector.
+  int debug_metrics_history_size_;
 
   bool deskew_;
 

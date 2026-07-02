@@ -130,6 +130,17 @@ dlio::OdomNode::OdomNode() : Node("dlio_odom_node") {
   this->first_imu_stamp = 0.;
   this->prev_imu_stamp = 0.;
 
+  this->trajectory.set_capacity(this->debug_metrics_history_size_);
+  this->comp_times.set_capacity(this->debug_metrics_history_size_);
+  this->imu_rates.set_capacity(this->debug_metrics_history_size_);
+  this->lidar_rates.set_capacity(this->debug_metrics_history_size_);
+  this->cpu_percents.set_capacity(this->debug_metrics_history_size_);
+
+  if (!this->diagnostic_history_file_.empty()) {
+    this->diagnostic_history_stream_.open(
+      this->diagnostic_history_file_, std::ios::out | std::ios::app);
+  }
+
   this->original_scan = std::make_shared<const pcl::PointCloud<PointType>>();
   this->deskewed_scan = std::make_shared<const pcl::PointCloud<PointType>>();
   this->current_scan = std::make_shared<const pcl::PointCloud<PointType>>();
@@ -142,7 +153,12 @@ dlio::OdomNode::OdomNode() : Node("dlio_odom_node") {
 
   this->first_scan_stamp = 0.;
   this->elapsed_time = 0.;
-  this->length_traversed;
+  // Was a no-op statement here (missing "= 0."), so length_traversed relied
+  // on debug()'s periodic recompute to ever get set -- meaning
+  // wait_until_move_ gating in publishCloud() could stay latched past real
+  // movement until the next debug print caught up. Now updated per-scan at
+  // the trajectory push site instead, so it needs a real initial value.
+  this->length_traversed = 0.;
 
   this->convex_hull.setDimension(3);
   this->concave_hull.setDimension(3);
@@ -240,6 +256,15 @@ void dlio::OdomNode::getParams() {
   dlio::declare_param(this, "diagnostics/submapWarningPoints", this->diagnostic_submap_warning_points_, 250000);
   dlio::declare_param(this, "diagnostics/historyFile", this->diagnostic_history_file_,
       std::string("/tmp/dlio_diagnostic_history.log"));
+  dlio::declare_param(this, "diagnostics/imuWaitTimeoutMs", this->diagnostic_imu_wait_timeout_ms_, 500.0);
+  dlio::declare_param(this, "debug/metricsHistorySize", this->debug_metrics_history_size_, 5000);
+
+  // Path publishing. Previously always published every pose unbounded --
+  // these keys existed in yaml configs but were never actually wired up.
+  dlio::declare_param(this, "odom/path/publish", this->path_publish_, true);
+  dlio::declare_param(this, "odom/path/publishEveryN", this->path_publish_every_n_, 1);
+  dlio::declare_param(this, "odom/path/maxPoses", this->path_max_poses_, 2000);
+  dlio::declare_param(this, "odom/path/minDistance", this->path_min_distance_, 0.0);
 
   // Frames
   dlio::declare_param(this, "frames/odom", this->odom_frame, "odom");
@@ -516,22 +541,52 @@ void dlio::OdomNode::publishToROS(pcl::PointCloud<PointType>::ConstPtr published
   this->publishCloud(published_cloud, T_cloud);
 
   // nav_msgs::msg::Path
-  this->path_ros.header.stamp = this->imu_stamp;
-  this->path_ros.header.frame_id = this->odom_frame;
+  // odom/path/publish, publishEveryN, maxPoses, minDistance were present in
+  // yaml configs but never actually wired up here -- path_ros.poses grew
+  // unboundedly and was republished in full every tick regardless of what
+  // those keys said. Now respected.
+  if (this->path_publish_) {
+    ++this->path_pose_counter_;
+    const bool every_n_ok =
+      this->path_publish_every_n_ <= 1 ||
+      (this->path_pose_counter_ % this->path_publish_every_n_) == 0;
+    const bool distance_ok =
+      this->path_min_distance_ <= 0.0 ||
+      !this->path_has_last_pushed_ ||
+      (this->state.p - this->path_last_pushed_p_).norm() >= this->path_min_distance_;
 
-  geometry_msgs::msg::PoseStamped p;
-  p.header.stamp = this->imu_stamp;
-  p.header.frame_id = this->odom_frame;
-  p.pose.position.x = this->state.p[0];
-  p.pose.position.y = this->state.p[1];
-  p.pose.position.z = this->state.p[2];
-  p.pose.orientation.w = this->state.q.w();
-  p.pose.orientation.x = this->state.q.x();
-  p.pose.orientation.y = this->state.q.y();
-  p.pose.orientation.z = this->state.q.z();
+    if (every_n_ok && distance_ok) {
+      this->path_ros.header.stamp = this->imu_stamp;
+      this->path_ros.header.frame_id = this->odom_frame;
 
-  this->path_ros.poses.push_back(p);
-  this->path_pub->publish(this->path_ros);
+      geometry_msgs::msg::PoseStamped p;
+      p.header.stamp = this->imu_stamp;
+      p.header.frame_id = this->odom_frame;
+      p.pose.position.x = this->state.p[0];
+      p.pose.position.y = this->state.p[1];
+      p.pose.position.z = this->state.p[2];
+      p.pose.orientation.w = this->state.q.w();
+      p.pose.orientation.x = this->state.q.x();
+      p.pose.orientation.y = this->state.q.y();
+      p.pose.orientation.z = this->state.q.z();
+
+      this->path_ros.poses.push_back(p);
+      this->path_last_pushed_p_ = this->state.p;
+      this->path_has_last_pushed_ = true;
+
+      if (this->path_max_poses_ > 0 &&
+        static_cast<int>(this->path_ros.poses.size()) > this->path_max_poses_)
+      {
+        const size_t excess = this->path_ros.poses.size() -
+          static_cast<size_t>(this->path_max_poses_);
+        this->path_ros.poses.erase(
+          this->path_ros.poses.begin(), this->path_ros.poses.begin() + excess);
+      }
+    }
+
+    this->path_ros.header.stamp = this->imu_stamp;
+    this->path_pub->publish(this->path_ros);
+  }
 
   // transform: odom to baselink
   geometry_msgs::msg::TransformStamped transformStamped;
@@ -867,11 +922,15 @@ void dlio::OdomNode::appendDiagnosticEventToFile(const DiagnosticEvent& event) {
   if (this->diagnostic_history_file_.empty()) {
     return;
   }
-  std::ofstream file(this->diagnostic_history_file_, std::ios::out | std::ios::app);
-  if (!file.is_open()) {
+  // Opened once (see getParams()/constructor) and kept open for the node's
+  // lifetime instead of a fresh ofstream per call, which used to mean an
+  // open+close syscall pair landing in the hot path during reject storms --
+  // exactly when compute headroom is least available.
+  if (!this->diagnostic_history_stream_.is_open()) {
     return;
   }
-  file << this->formatDiagnosticEvent(event) << std::endl;
+  this->diagnostic_history_stream_ << this->formatDiagnosticEvent(event) << std::endl;
+  this->diagnostic_history_stream_.flush();
 }
 
 void dlio::OdomNode::printDiagnosticHistory() {
@@ -920,6 +979,14 @@ void dlio::OdomNode::publishKeyframe(std::pair<std::pair<Eigen::Vector3f, Eigen:
   p.orientation.y = kf.first.second.y();
   p.orientation.z = kf.first.second.z();
   this->kf_pose_ros.poses.push_back(p);
+  // Previously unbounded (same pattern as path_ros.poses above). Keyframe
+  // count is already implicitly bounded in practice, but cap defensively
+  // for long-running/large-loop missions.
+  if (this->kf_pose_ros.poses.size() > kMaxKeyframePoses) {
+    const size_t excess = this->kf_pose_ros.poses.size() - kMaxKeyframePoses;
+    this->kf_pose_ros.poses.erase(
+      this->kf_pose_ros.poses.begin(), this->kf_pose_ros.poses.begin() + excess);
+  }
 
   // Publish
   this->kf_pose_ros.header.stamp = timestamp;
@@ -1462,6 +1529,21 @@ void dlio::OdomNode::callbackPointCloud(const sensor_msgs::msg::PointCloud2::Sha
 
   // Update trajectory
   this->trajectory.push_back( std::make_pair(this->state.p, this->state.q) );
+
+  // Incremental cumulative-distance accumulation. Mirrors the jitter filter
+  // debug() used to apply when it rescanned the full trajectory each tick
+  // (only count a segment if it's >= 0.1 m, and only advance the reference
+  // point when a segment is counted) -- see length_traversed_has_prev_.
+  if (!this->length_traversed_has_prev_) {
+    this->length_traversed_prev_p_ = this->state.p;
+    this->length_traversed_has_prev_ = true;
+  } else {
+    const double l = (this->state.p - this->length_traversed_prev_p_).norm();
+    if (l >= 0.1) {
+      this->length_traversed += l;
+      this->length_traversed_prev_p_ = this->state.p;
+    }
+  }
 
   // Update time stamps
   this->lidar_rates.push_back( 1. / (this->scan_stamp - this->prev_scan_stamp) );
@@ -2409,9 +2491,24 @@ bool dlio::OdomNode::imuMeasFromTimeRange(double start_time, double end_time,
   if (this->imu_buffer.empty() || this->imu_buffer.front().stamp < end_time) {
     // Wait for the latest IMU data. The predicate must handle an empty buffer,
     // because startup races can wake this before the first IMU is stored.
-    this->cv_imu_stamp.wait(imu_lock, [this, &end_time]{
-      return !this->imu_buffer.empty() && this->imu_buffer.front().stamp >= end_time;
-    });
+    // Bounded: previously this was an unconditional wait() -- if the IMU
+    // stream stalled (sim pause, driver hiccup, bag end), this call blocked
+    // forever holding the lidar callback's callback group, killing the node
+    // with no diagnostic. A timeout converts that hang into a logged
+    // degradation; callers already treat a false return as "skip this scan."
+    const bool ready = this->cv_imu_stamp.wait_for(
+      imu_lock,
+      std::chrono::duration<double, std::milli>(this->diagnostic_imu_wait_timeout_ms_),
+      [this, &end_time]{
+        return !this->imu_buffer.empty() && this->imu_buffer.front().stamp >= end_time;
+      });
+    if (!ready) {
+      std::ostringstream detail;
+      detail << "IMU wait timed out after " << this->diagnostic_imu_wait_timeout_ms_
+             << " ms waiting for stamp >= " << end_time;
+      this->recordDiagnosticEvent("imu_wait_timeout", detail.str());
+      return false;
+    }
   }
 
   if (this->imu_buffer.size() < 2) {
@@ -2793,7 +2890,7 @@ void dlio::OdomNode::computeSpaciousness() {
   // compute range of points
   std::vector<float> ds;
 
-  for (int i = 0; i <= this->original_scan->points.size(); i++) {
+  for (int i = 0; i < this->original_scan->points.size(); i++) {
     float d = std::sqrt(pow(this->original_scan->points[i].x, 2) +
                         pow(this->original_scan->points[i].y, 2));
     ds.push_back(d);
@@ -3200,24 +3297,12 @@ void dlio::OdomNode::pauseSubmapBuildIfNeeded() {
 
 void dlio::OdomNode::debug() {
 
-  // Total length traversed
-  double length_traversed = 0.;
-  Eigen::Vector3f p_curr = Eigen::Vector3f(0., 0., 0.);
-  Eigen::Vector3f p_prev = Eigen::Vector3f(0., 0., 0.);
-  for (const auto& t : this->trajectory) {
-    if (p_prev == Eigen::Vector3f(0., 0., 0.)) {
-      p_prev = t.first;
-      continue;
-    }
-    p_curr = t.first;
-    double l = sqrt(pow(p_curr[0] - p_prev[0], 2) + pow(p_curr[1] - p_prev[1], 2) + pow(p_curr[2] - p_prev[2], 2));
-
-    if (l >= 0.1) {
-      length_traversed += l;
-      p_prev = p_curr;
-    }
-  }
-  this->length_traversed = length_traversed;
+  // Total length traversed. Tracked incrementally at the trajectory push
+  // site now (see length_traversed_has_prev_) instead of rescanning the
+  // full trajectory buffer here every tick -- trajectory is bounded (see
+  // its declaration), so a full rescan would silently become a windowed
+  // approximation rather than a true cumulative total.
+  double length_traversed = this->length_traversed;
 
   // Average computation time
   double avg_comp_time =
