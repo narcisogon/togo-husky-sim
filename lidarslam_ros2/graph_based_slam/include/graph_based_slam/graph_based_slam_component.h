@@ -199,6 +199,25 @@ private:
     int loop_detection_period_;
     double threshold_loop_closure_score_;
     double scan_context_loop_closure_score_threshold_ {-1.0};
+    // Relaxed fitness ceiling for TRIANGLE_DESCRIPTOR candidates with strong
+    // RANSAC inlier evidence, mirroring scan_context_loop_closure_score_threshold_.
+    // -1.0 = disabled (fall back to threshold_loop_closure_score_).
+    // Triangle inliers are the correctness signal; GICP/NDT fitness is an
+    // overlap signal. A thin-overlap reverse-direction revisit can have
+    // excellent inliers and poor fitness purely from one-sided sensing --
+    // gating solely on fitness discards otherwise-correct closures. Fitness
+    // still scales loop_edge_info_weight_ downstream (loop_edge_info_weight_
+    // / fitness in doPoseAdjustment), so a thin-overlap loop still becomes a
+    // WEAKER edge, never a rejected one.
+    double triangle_loop_closure_score_threshold_ {-1.0};
+    // Guardrail: the relaxed threshold above only applies when a candidate's
+    // inlier evidence clears these (independent of, and typically stricter
+    // than, the base triangle_descriptor_min_inliers_ / min_inlier_ratio_
+    // RANSAC acceptance gate). -1 / -1.0 = no extra bar beyond the base gate.
+    // Strong triangles buy fitness leniency; weak ones still get the generic
+    // threshold_loop_closure_score_.
+    int triangle_relaxed_fitness_min_inliers_ {-1};
+    double triangle_relaxed_fitness_min_inlier_ratio_ {-1.0};
     double distance_loop_closure_;
     double range_of_searching_loop_closure_;
     int search_submap_num_;
@@ -309,19 +328,38 @@ private:
     // Keypoint extractor mode. "bev_max_height" is the original outdoor-only
     // extractor; "edge_3d" enables PCA-edgeness keypoints that survive in
     // narrow-FOV / indoor scenes (MID-360, Newer College math_hard) where
-    // BEV max-height keypoint repeatability collapses.
+    // BEV max-height keypoint repeatability collapses; "surface_saliency"
+    // detrends a robust ground-plane fit out of the 2.5D grid and picks
+    // curvature extrema (crater rims, curbs, boulders) so open/sloped
+    // terrain (parking lots, hills) that starves both other modes still
+    // yields ~max_keypoints via percentile top-N rather than a hard gate.
     std::string triangle_descriptor_keypoint_mode_ {"bev_max_height"};
     double triangle_descriptor_edge_voxel_size_m_ {0.4};
     double triangle_descriptor_edge_neighbor_radius_m_ {1.0};
     int triangle_descriptor_edge_min_neighbors_ {6};
     double triangle_descriptor_edge_min_edgeness_ {0.5};
     double triangle_descriptor_edge_nms_radius_m_ {2.0};
+    // ----- SURFACE_SALIENCY params (see KeypointExtractionConfig for the
+    // per-field rationale; these just plumb the same values from ROS params).
+    double triangle_descriptor_surface_plane_fit_percentile_ {0.3};
+    int triangle_descriptor_surface_curvature_radius_cells_ {1};
+    double triangle_descriptor_surface_min_saliency_percentile_ {0.0};
     // 5-inlier floor would have killed the only accepted loop in v4 (id=32
     // emitted with 4 inliers), so settle on 4 as the compromise between
     // recall and noise. Votes can stay loose because the tighter keypoint
     // / hash params suppress most false buckets on their own.
     int triangle_descriptor_min_votes_ {6};
     int triangle_descriptor_min_inliers_ {4};
+    // Number of top vote-getting submaps to verify (each scoped to its own
+    // single-submap TriangleDatabase) before picking a winner by
+    // inlier_ratio (ties broken by inlier count) instead of trusting
+    // top-1-by-votes. A permissive keypoint stage (e.g. surface_saliency)
+    // generates more hash collisions, so the single top-voted submap is not
+    // reliably the true match; verifying several candidates and letting
+    // RANSAC inlier quality pick the winner is the aliasing fix. K=1
+    // reproduces the legacy top-1-by-votes behaviour bit-for-bit, which is
+    // why it's the default (preserves the NTU VIRAL / Newer College tuning).
+    int triangle_descriptor_verify_top_k_ {1};
     // Companion to min_inliers expressed as inliers / eval_n. Zero disables.
     // Lets the operator combine a low absolute count with a meaningful
     // relative-density floor (e.g. 4 inliers / max_pairs 64 = 6% vs the

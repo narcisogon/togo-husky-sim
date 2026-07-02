@@ -38,6 +38,13 @@
 //      - extractKeypointsEdge3D: PCA eigenvalue ratio on radius-r neighborhoods
 //        picks edge-like supports (column edges, wall corners). Survives in
 //        narrow-FOV (MID-360) and indoor scenes where BEV max-height collapses.
+//      - extractKeypointsSurfaceSaliency: same 2.5D grid as BEV, but detrends
+//        a robust ground-plane fit out of it first and picks curvature
+//        extrema (crater rims, curbs, boulders, pole bases) on the residual
+//        surface, ranked by percentile rather than an absolute threshold.
+//        Works on open/sloped terrain (parking lots, hills, lunar-like)
+//        where BEV_MAX_HEIGHT (needs vertical prominence) and EDGE_3D (needs
+//        edge response) both starve.
 //   2. buildTriangles: enumerate all 3-tuples of keypoints, drop those whose
 //      edge lengths fall outside [min_edge_m, max_edge_m] or that are
 //      near-collinear, and store the edges sorted ascending so the triangle
@@ -86,10 +93,14 @@ struct Keypoint
 // Keypoint extraction strategy. BEV_MAX_HEIGHT was the original outdoor-only
 // extractor; EDGE_3D adds PCA-based edge keypoints that survive in narrow-FOV
 // LiDARs (MID-360) and indoor scenes where BEV max-height collapses.
+// SURFACE_SALIENCY detrends a robust ground-plane fit out of the BEV grid and
+// picks curvature extrema, so open/sloped terrain that starves the other two
+// (no vertical prominence, no edge response) still yields keypoints.
 enum class KeypointMode
 {
   BEV_MAX_HEIGHT,
   EDGE_3D,
+  SURFACE_SALIENCY,
 };
 
 struct KeypointExtractionConfig
@@ -115,6 +126,23 @@ struct KeypointExtractionConfig
   float edge_min_edgeness {0.5f};
   // Suppression radius (m) for non-maximum suppression of edgeness.
   float edge_nms_radius_m {2.0f};
+  // ----- SURFACE_SALIENCY params -----
+  // Lower height-percentile (0..1) of populated grid cells used to
+  // least-squares fit the dominant ground plane; keeps tall structures
+  // (curbs, boulders, poles) from dragging the plane off horizontal.
+  // 0.3 = fit using the lowest 30% of cells by height.
+  double surface_plane_fit_percentile {0.3};
+  // Neighborhood radius (in cells) for the curvature response computed over
+  // the detrended residual surface (|residual - mean(neighborhood)|).
+  int surface_curvature_radius_cells {1};
+  // Soft percentile floor (0..1) applied to the saliency distribution BEFORE
+  // the top-N cut: cells below this percentile are dropped even if that
+  // leaves fewer than max_keypoints. 0 = no floor, meaning relative rank
+  // (top max_keypoints) is the only selector -- this is what lets a flat lot
+  // and a crater field both yield ~max_keypoints instead of the hard-gate
+  // starvation that BEV_MAX_HEIGHT / EDGE_3D hit on open terrain.
+  double surface_min_saliency_percentile {0.0};
+  // Non-maximum suppression radius reuses edge_nms_radius_m (above).
   // ----- common -----
   // Cap on returned keypoints; we keep the highest-salience ones.
   int max_keypoints {80};
@@ -168,6 +196,33 @@ inline float smallestAngleDeg(float l1, float l2, float l3)
   return std::acos(cos_alpha) * 180.0f / static_cast<float>(M_PI);
 }
 
+// Shared 2.5D max-height grid builder used by BEV_MAX_HEIGHT and
+// SURFACE_SALIENCY (which detrends this same grid before ranking). Populates
+// max_height with the per-cell max z (-inf when the cell is empty) and
+// best_x / best_y with the (x, y) of the point that produced it, so emitted
+// keypoints sit at an actual support rather than a cell centre.
+inline void buildMaxHeightGrid(
+  const pcl::PointCloud<pcl::PointXYZI> & cloud,
+  int gc, float half, float cell,
+  Eigen::MatrixXf & max_height, Eigen::MatrixXf & best_x, Eigen::MatrixXf & best_y)
+{
+  max_height = Eigen::MatrixXf::Constant(gc, gc, -std::numeric_limits<float>::infinity());
+  best_x = Eigen::MatrixXf::Zero(gc, gc);
+  best_y = Eigen::MatrixXf::Zero(gc, gc);
+  for (const auto & p : cloud.points) {
+    if (!std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z)) {continue;}
+    if (std::abs(p.x) > half || std::abs(p.y) > half) {continue;}
+    const int ix = static_cast<int>(std::floor((p.x + half) / cell));
+    const int iy = static_cast<int>(std::floor((p.y + half) / cell));
+    if (ix < 0 || ix >= gc || iy < 0 || iy >= gc) {continue;}
+    if (p.z > max_height(iy, ix)) {
+      max_height(iy, ix) = p.z;
+      best_x(iy, ix) = p.x;
+      best_y(iy, ix) = p.y;
+    }
+  }
+}
+
 }  // namespace detail
 
 // --------------------------- keypoint extraction ---------------------------
@@ -184,25 +239,10 @@ inline std::vector<Keypoint> extractKeypointsBEV(
   const float half = static_cast<float>(cfg.grid_size_m * 0.5);
   const float cell = static_cast<float>(cfg.grid_size_m / static_cast<double>(gc));
 
-  Eigen::MatrixXf max_height = Eigen::MatrixXf::Constant(
-    gc, gc, -std::numeric_limits<float>::infinity());
-  // Remember the (x, y) of the highest contributing point per cell so the
-  // emitted keypoint sits at the actual support and not at the cell centre.
-  Eigen::MatrixXf best_x = Eigen::MatrixXf::Zero(gc, gc);
-  Eigen::MatrixXf best_y = Eigen::MatrixXf::Zero(gc, gc);
-
-  for (const auto & p : cloud.points) {
-    if (!std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z)) {continue;}
-    if (std::abs(p.x) > half || std::abs(p.y) > half) {continue;}
-    const int ix = static_cast<int>(std::floor((p.x + half) / cell));
-    const int iy = static_cast<int>(std::floor((p.y + half) / cell));
-    if (ix < 0 || ix >= gc || iy < 0 || iy >= gc) {continue;}
-    if (p.z > max_height(iy, ix)) {
-      max_height(iy, ix) = p.z;
-      best_x(iy, ix) = p.x;
-      best_y(iy, ix) = p.y;
-    }
-  }
+  Eigen::MatrixXf max_height;
+  Eigen::MatrixXf best_x;
+  Eigen::MatrixXf best_y;
+  detail::buildMaxHeightGrid(cloud, gc, half, cell, max_height, best_x, best_y);
 
   const int r = std::max(1, cfg.neighborhood_radius_cells);
   std::vector<Keypoint> candidates;
@@ -246,6 +286,174 @@ inline std::vector<Keypoint> extractKeypointsBEV(
 
   const int keep = std::min<int>(cfg.max_keypoints, static_cast<int>(candidates.size()));
   result.assign(candidates.begin(), candidates.begin() + keep);
+  return result;
+}
+
+// ------------------ surface-saliency keypoint extraction ------------------
+
+// Detrended-curvature keypoint extractor. Builds the same 2.5D max-height
+// grid as BEV_MAX_HEIGHT, fits a robust ground plane (least-squares over the
+// lowest surface_plane_fit_percentile of populated cells, so tall structures
+// don't drag it off horizontal), subtracts it to get a residual surface, and
+// ranks cells by a curvature response on that residual. Selection is by
+// percentile rank (top max_keypoints), not an absolute threshold, which is
+// what makes this mode work on open/sloped terrain (parking lots, hills)
+// where BEV_MAX_HEIGHT (needs vertical prominence) and EDGE_3D (needs edge
+// response) both starve under their hard continue-gates.
+inline std::vector<Keypoint> extractKeypointsSurfaceSaliency(
+  const pcl::PointCloud<pcl::PointXYZI> & cloud,
+  const KeypointExtractionConfig & cfg)
+{
+  std::vector<Keypoint> result;
+  if (cloud.empty() || cfg.grid_cells <= 0 || cfg.grid_size_m <= 0.0) {
+    return result;
+  }
+  const int gc = cfg.grid_cells;
+  const float half = static_cast<float>(cfg.grid_size_m * 0.5);
+  const float cell = static_cast<float>(cfg.grid_size_m / static_cast<double>(gc));
+
+  Eigen::MatrixXf max_height;
+  Eigen::MatrixXf best_x;
+  Eigen::MatrixXf best_y;
+  detail::buildMaxHeightGrid(cloud, gc, half, cell, max_height, best_x, best_y);
+
+  struct Cell
+  {
+    int iy;
+    int ix;
+    float z;
+  };
+  std::vector<Cell> populated;
+  populated.reserve(static_cast<std::size_t>(gc) * static_cast<std::size_t>(gc));
+  for (int iy = 0; iy < gc; ++iy) {
+    for (int ix = 0; ix < gc; ++ix) {
+      const float h = max_height(iy, ix);
+      if (std::isfinite(h)) {populated.push_back({iy, ix, h});}
+    }
+  }
+  if (populated.size() < 3) {return result;}
+
+  // Robust ground-plane fit: least-squares z = a*x + b*y + c over the lower
+  // height-percentile of populated cells.
+  std::vector<Cell> by_height = populated;
+  std::sort(
+    by_height.begin(), by_height.end(),
+    [](const Cell & a, const Cell & b) {return a.z < b.z;});
+  const double pct = std::max(0.05, std::min(1.0, cfg.surface_plane_fit_percentile));
+  const std::size_t n_ground = std::max<std::size_t>(
+    3, static_cast<std::size_t>(static_cast<double>(by_height.size()) * pct));
+
+  Eigen::Matrix3d A = Eigen::Matrix3d::Zero();
+  Eigen::Vector3d rhs = Eigen::Vector3d::Zero();
+  for (std::size_t i = 0; i < n_ground; ++i) {
+    const auto & c = by_height[i];
+    const double x = static_cast<double>(best_x(c.iy, c.ix));
+    const double y = static_cast<double>(best_y(c.iy, c.ix));
+    const double z = static_cast<double>(c.z);
+    A(0, 0) += x * x; A(0, 1) += x * y; A(0, 2) += x;
+    A(1, 0) += x * y; A(1, 1) += y * y; A(1, 2) += y;
+    A(2, 0) += x;     A(2, 1) += y;     A(2, 2) += 1.0;
+    rhs(0) += x * z; rhs(1) += y * z; rhs(2) += z;
+  }
+  Eigen::Vector3d plane = Eigen::Vector3d::Zero();
+  if (std::abs(A.determinant()) > 1e-9) {
+    plane = A.colPivHouseholderQr().solve(rhs);
+  }
+  const double pa = plane(0);
+  const double pb = plane(1);
+  const double pc = plane(2);
+
+  // Detrend: residual(iy, ix) = z - plane(x, y). NaN marks unpopulated cells.
+  Eigen::MatrixXf residual = Eigen::MatrixXf::Constant(
+    gc, gc, std::numeric_limits<float>::quiet_NaN());
+  for (const auto & c : populated) {
+    const double x = static_cast<double>(best_x(c.iy, c.ix));
+    const double y = static_cast<double>(best_y(c.iy, c.ix));
+    const double plane_z = pa * x + pb * y + pc;
+    residual(c.iy, c.ix) = static_cast<float>(static_cast<double>(c.z) - plane_z);
+  }
+
+  // Curvature saliency: |residual - mean(neighborhood residual)| over a
+  // (2r+1)x(2r+1) window on the detrended surface. Crater rims, boulders,
+  // curbs and pole bases become extrema; flat ground -> ~0.
+  const int r = std::max(1, cfg.surface_curvature_radius_cells);
+  struct Candidate
+  {
+    int iy;
+    int ix;
+    float saliency;
+  };
+  std::vector<Candidate> candidates;
+  candidates.reserve(populated.size());
+  for (const auto & c : populated) {
+    const float res = residual(c.iy, c.ix);
+    float sum = 0.0f;
+    int count = 0;
+    for (int dy = -r; dy <= r; ++dy) {
+      const int ny = c.iy + dy;
+      if (ny < 0 || ny >= gc) {continue;}
+      for (int dx = -r; dx <= r; ++dx) {
+        const int nx = c.ix + dx;
+        if (nx < 0 || nx >= gc) {continue;}
+        if (nx == c.ix && ny == c.iy) {continue;}
+        const float rn = residual(ny, nx);
+        if (!std::isfinite(rn)) {continue;}
+        sum += rn;
+        ++count;
+      }
+    }
+    if (count == 0) {continue;}
+    const float mean_neighbor = sum / static_cast<float>(count);
+    candidates.push_back({c.iy, c.ix, std::abs(res - mean_neighbor)});
+  }
+  if (candidates.empty()) {return result;}
+
+  std::sort(
+    candidates.begin(), candidates.end(),
+    [](const Candidate & a, const Candidate & b) {return a.saliency > b.saliency;});
+
+  // Soft percentile floor: drop the lowest-saliency tail of the candidate
+  // distribution before ranking. The primary selector stays relative rank
+  // (the top-N cut below), not this floor -- that is the anti-starvation
+  // fix, since a flat lot and a crater field both then yield ~max_keypoints
+  // instead of zero.
+  const double floor_pct = std::max(0.0, std::min(1.0, cfg.surface_min_saliency_percentile));
+  if (floor_pct > 0.0) {
+    const std::size_t floor_cut = std::max<std::size_t>(
+      1, static_cast<std::size_t>(static_cast<double>(candidates.size()) * (1.0 - floor_pct)));
+    if (floor_cut < candidates.size()) {candidates.resize(floor_cut);}
+  }
+
+  // NMS (same pattern as EDGE_3D): greedily accept by descending saliency,
+  // reject candidates within edge_nms_radius_m of an already-accepted one so
+  // keypoints spread over the tile instead of clustering on one ridge.
+  const float nms_r = std::max(0.0f, cfg.edge_nms_radius_m);
+  const float nms_r2 = nms_r * nms_r;
+  std::vector<Keypoint> kept;
+  kept.reserve(candidates.size());
+  for (const auto & c : candidates) {
+    // Emit the original (non-detrended) z: the triangles and downstream
+    // SE(3) must live in the real submap frame; detrending only guided
+    // which cells to select.
+    const Eigen::Vector3f pos(best_x(c.iy, c.ix), best_y(c.iy, c.ix), max_height(c.iy, c.ix));
+    bool suppressed = false;
+    if (nms_r > 0.0f) {
+      for (const auto & k : kept) {
+        if ((k.position - pos).squaredNorm() < nms_r2) {
+          suppressed = true;
+          break;
+        }
+      }
+    }
+    if (suppressed) {continue;}
+    Keypoint kp;
+    kp.position = pos;
+    kp.salience = c.saliency;
+    kept.push_back(kp);
+    if (cfg.max_keypoints > 0 && static_cast<int>(kept.size()) >= cfg.max_keypoints) {break;}
+  }
+
+  result = std::move(kept);
   return result;
 }
 
@@ -377,6 +585,8 @@ inline std::vector<Keypoint> extractKeypoints(
   switch (cfg.mode) {
     case KeypointMode::EDGE_3D:
       return extractKeypointsEdge3D(cloud, cfg);
+    case KeypointMode::SURFACE_SALIENCY:
+      return extractKeypointsSurfaceSaliency(cloud, cfg);
     case KeypointMode::BEV_MAX_HEIGHT:
     default:
       return extractKeypointsBEV(cloud, cfg);

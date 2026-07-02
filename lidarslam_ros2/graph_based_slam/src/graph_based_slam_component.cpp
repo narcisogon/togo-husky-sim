@@ -239,6 +239,18 @@ GraphBasedSlamComponent::GraphBasedSlamComponent(const rclcpp::NodeOptions & opt
   get_parameter(
     "scan_context_loop_closure_score_threshold",
     scan_context_loop_closure_score_threshold_);
+  declare_parameter("triangle_loop_closure_score_threshold", -1.0);
+  get_parameter(
+    "triangle_loop_closure_score_threshold",
+    triangle_loop_closure_score_threshold_);
+  declare_parameter("triangle_relaxed_fitness_min_inliers", -1);
+  get_parameter(
+    "triangle_relaxed_fitness_min_inliers",
+    triangle_relaxed_fitness_min_inliers_);
+  declare_parameter("triangle_relaxed_fitness_min_inlier_ratio", -1.0);
+  get_parameter(
+    "triangle_relaxed_fitness_min_inlier_ratio",
+    triangle_relaxed_fitness_min_inlier_ratio_);
   declare_parameter("distance_loop_closure", 20.0);
   get_parameter("distance_loop_closure", distance_loop_closure_);
   declare_parameter("range_of_searching_loop_closure", 20.0);
@@ -360,10 +372,25 @@ GraphBasedSlamComponent::GraphBasedSlamComponent(const rclcpp::NodeOptions & opt
   declare_parameter("triangle_descriptor_edge_nms_radius_m", 2.0);
   get_parameter(
     "triangle_descriptor_edge_nms_radius_m", triangle_descriptor_edge_nms_radius_m_);
+  declare_parameter("triangle_descriptor_surface_plane_fit_percentile", 0.3);
+  get_parameter(
+    "triangle_descriptor_surface_plane_fit_percentile",
+    triangle_descriptor_surface_plane_fit_percentile_);
+  declare_parameter("triangle_descriptor_surface_curvature_radius_cells", 1);
+  get_parameter(
+    "triangle_descriptor_surface_curvature_radius_cells",
+    triangle_descriptor_surface_curvature_radius_cells_);
+  declare_parameter("triangle_descriptor_surface_min_saliency_percentile", 0.0);
+  get_parameter(
+    "triangle_descriptor_surface_min_saliency_percentile",
+    triangle_descriptor_surface_min_saliency_percentile_);
   declare_parameter("triangle_descriptor_min_votes", 6);
   get_parameter("triangle_descriptor_min_votes", triangle_descriptor_min_votes_);
   declare_parameter("triangle_descriptor_min_inliers", 4);
   get_parameter("triangle_descriptor_min_inliers", triangle_descriptor_min_inliers_);
+  declare_parameter("triangle_descriptor_verify_top_k", 1);
+  get_parameter(
+    "triangle_descriptor_verify_top_k", triangle_descriptor_verify_top_k_);
   declare_parameter("triangle_descriptor_min_inlier_ratio", 0.0);
   get_parameter(
     "triangle_descriptor_min_inlier_ratio",
@@ -757,12 +784,13 @@ GraphBasedSlamComponent::GraphBasedSlamComponent(const rclcpp::NodeOptions & opt
     bev_descriptor_pose_consistency_threshold_m_ = -1.0;
   }
   if (triangle_descriptor_keypoint_mode_ != "bev_max_height" &&
-    triangle_descriptor_keypoint_mode_ != "edge_3d")
+    triangle_descriptor_keypoint_mode_ != "edge_3d" &&
+    triangle_descriptor_keypoint_mode_ != "surface_saliency")
   {
     RCLCPP_WARN(
       get_logger(),
-      "triangle_descriptor_keypoint_mode must be 'bev_max_height' or 'edge_3d', "
-      "got '%s'; falling back to 'bev_max_height'",
+      "triangle_descriptor_keypoint_mode must be 'bev_max_height', 'edge_3d', or "
+      "'surface_saliency', got '%s'; falling back to 'bev_max_height'",
       triangle_descriptor_keypoint_mode_.c_str());
     triangle_descriptor_keypoint_mode_ = "bev_max_height";
   }
@@ -782,6 +810,33 @@ GraphBasedSlamComponent::GraphBasedSlamComponent(const rclcpp::NodeOptions & opt
   }
   if (triangle_descriptor_edge_nms_radius_m_ < 0.0) {
     triangle_descriptor_edge_nms_radius_m_ = 0.0;
+  }
+  if (
+    triangle_descriptor_surface_plane_fit_percentile_ < 0.05 ||
+    triangle_descriptor_surface_plane_fit_percentile_ > 1.0)
+  {
+    RCLCPP_WARN(
+      get_logger(),
+      "triangle_descriptor_surface_plane_fit_percentile must be in [0.05, 1.0]; "
+      "clamping %.3f",
+      triangle_descriptor_surface_plane_fit_percentile_);
+    triangle_descriptor_surface_plane_fit_percentile_ = std::max(
+      0.05, std::min(1.0, triangle_descriptor_surface_plane_fit_percentile_));
+  }
+  if (triangle_descriptor_surface_curvature_radius_cells_ < 1) {
+    triangle_descriptor_surface_curvature_radius_cells_ = 1;
+  }
+  if (
+    triangle_descriptor_surface_min_saliency_percentile_ < 0.0 ||
+    triangle_descriptor_surface_min_saliency_percentile_ > 1.0)
+  {
+    RCLCPP_WARN(
+      get_logger(),
+      "triangle_descriptor_surface_min_saliency_percentile must be in [0, 1]; "
+      "clamping %.3f",
+      triangle_descriptor_surface_min_saliency_percentile_);
+    triangle_descriptor_surface_min_saliency_percentile_ = std::max(
+      0.0, std::min(1.0, triangle_descriptor_surface_min_saliency_percentile_));
   }
   if (triangle_descriptor_grid_size_m_ <= 0.0) {
     RCLCPP_WARN(
@@ -833,6 +888,13 @@ GraphBasedSlamComponent::GraphBasedSlamComponent(const rclcpp::NodeOptions & opt
   }
   if (triangle_descriptor_min_inliers_ < 1) {
     triangle_descriptor_min_inliers_ = 1;
+  }
+  if (triangle_descriptor_verify_top_k_ < 1) {
+    RCLCPP_WARN(
+      get_logger(),
+      "triangle_descriptor_verify_top_k must be >= 1, clamping %d to 1",
+      triangle_descriptor_verify_top_k_);
+    triangle_descriptor_verify_top_k_ = 1;
   }
   if (triangle_descriptor_min_inlier_ratio_ < 0.0) {
     triangle_descriptor_min_inlier_ratio_ = 0.0;
@@ -997,6 +1059,12 @@ GraphBasedSlamComponent::GraphBasedSlamComponent(const rclcpp::NodeOptions & opt
   std::cout << "threshold_loop_closure_score:" << threshold_loop_closure_score_ << std::endl;
   std::cout << "scan_context_loop_closure_score_threshold:" <<
     scan_context_loop_closure_score_threshold_ << std::endl;
+  std::cout << "triangle_loop_closure_score_threshold:" <<
+    triangle_loop_closure_score_threshold_ << std::endl;
+  std::cout << "triangle_relaxed_fitness_min_inliers:" <<
+    triangle_relaxed_fitness_min_inliers_ << std::endl;
+  std::cout << "triangle_relaxed_fitness_min_inlier_ratio:" <<
+    triangle_relaxed_fitness_min_inlier_ratio_ << std::endl;
   std::cout << "distance_loop_closure[m]:" << distance_loop_closure_ << std::endl;
   std::cout << "use_distance_loop_candidates:" << std::boolalpha <<
     use_distance_loop_candidates_ << std::endl;
@@ -1127,6 +1195,12 @@ GraphBasedSlamComponent::GraphBasedSlamComponent(const rclcpp::NodeOptions & opt
       triangle_descriptor_edge_min_edgeness_ << std::endl;
     std::cout << "triangle_descriptor_edge_nms_radius_m:" <<
       triangle_descriptor_edge_nms_radius_m_ << std::endl;
+    std::cout << "triangle_descriptor_surface_plane_fit_percentile:" <<
+      triangle_descriptor_surface_plane_fit_percentile_ << std::endl;
+    std::cout << "triangle_descriptor_surface_curvature_radius_cells:" <<
+      triangle_descriptor_surface_curvature_radius_cells_ << std::endl;
+    std::cout << "triangle_descriptor_surface_min_saliency_percentile:" <<
+      triangle_descriptor_surface_min_saliency_percentile_ << std::endl;
     std::cout << "triangle_descriptor_min_edge_m:" <<
       triangle_descriptor_min_edge_m_ << std::endl;
     std::cout << "triangle_descriptor_max_edge_m:" <<
@@ -1141,6 +1215,8 @@ GraphBasedSlamComponent::GraphBasedSlamComponent(const rclcpp::NodeOptions & opt
       triangle_descriptor_min_votes_ << std::endl;
     std::cout << "triangle_descriptor_min_inliers:" <<
       triangle_descriptor_min_inliers_ << std::endl;
+    std::cout << "triangle_descriptor_verify_top_k:" <<
+      triangle_descriptor_verify_top_k_ << std::endl;
     std::cout << "triangle_descriptor_min_inlier_ratio:" <<
       triangle_descriptor_min_inlier_ratio_ << std::endl;
     std::cout << "triangle_descriptor_max_pairs:" <<
@@ -1508,6 +1584,14 @@ struct LoopCandidate
   // initial guess instead of the pose-derived guess when source matches.
   Eigen::Matrix4f relative_transform {Eigen::Matrix4f::Identity()};
   bool has_relative_transform {false};
+  // Triangle RANSAC inlier evidence (source == TRIANGLE_DESCRIPTOR only).
+  // -1 / -1.0 = not populated. This is the correctness signal used to gate
+  // the relaxed-fitness acceptance path further down in the registration
+  // loop -- GICP/NDT fitness measures overlap, not correctness, so a
+  // thin-overlap reverse-direction revisit can have strong inlier evidence
+  // and poor fitness at the same time.
+  int triangle_inliers {-1};
+  float triangle_inlier_ratio {-1.0f};
 };
 
 struct LoopCandidateResult
@@ -1647,6 +1731,8 @@ void GraphBasedSlamComponent::searchLoop()
     graphslam::triangle::KeypointExtractionConfig kp_cfg;
     if (triangle_descriptor_keypoint_mode_ == "edge_3d") {
       kp_cfg.mode = graphslam::triangle::KeypointMode::EDGE_3D;
+    } else if (triangle_descriptor_keypoint_mode_ == "surface_saliency") {
+      kp_cfg.mode = graphslam::triangle::KeypointMode::SURFACE_SALIENCY;
     } else {
       kp_cfg.mode = graphslam::triangle::KeypointMode::BEV_MAX_HEIGHT;
     }
@@ -1660,6 +1746,11 @@ void GraphBasedSlamComponent::searchLoop()
     kp_cfg.edge_min_neighbors = triangle_descriptor_edge_min_neighbors_;
     kp_cfg.edge_min_edgeness = static_cast<float>(triangle_descriptor_edge_min_edgeness_);
     kp_cfg.edge_nms_radius_m = static_cast<float>(triangle_descriptor_edge_nms_radius_m_);
+    kp_cfg.surface_plane_fit_percentile = triangle_descriptor_surface_plane_fit_percentile_;
+    kp_cfg.surface_curvature_radius_cells =
+      triangle_descriptor_surface_curvature_radius_cells_;
+    kp_cfg.surface_min_saliency_percentile =
+      triangle_descriptor_surface_min_saliency_percentile_;
     graphslam::triangle::TriangleBuildConfig build_cfg;
     build_cfg.min_edge_m = static_cast<float>(triangle_descriptor_min_edge_m_);
     build_cfg.max_edge_m = static_cast<float>(triangle_descriptor_max_edge_m_);
@@ -1806,7 +1897,9 @@ void GraphBasedSlamComponent::searchLoopForLatest(
     double selection_metric,
     LoopCandidate::Source source,
     double yaw_rad = 0.0,
-    const Eigen::Matrix4f * relative_transform = nullptr)
+    const Eigen::Matrix4f * relative_transform = nullptr,
+    int triangle_inliers = -1,
+    float triangle_inlier_ratio = -1.0f)
     {
       if (index < 0) {
         return;
@@ -1821,6 +1914,8 @@ void GraphBasedSlamComponent::searchLoopForLatest(
           candidate.relative_transform = *relative_transform;
           candidate.has_relative_transform = true;
         }
+        candidate.triangle_inliers = triangle_inliers;
+        candidate.triangle_inlier_ratio = triangle_inlier_ratio;
         return;
       }
 
@@ -1833,6 +1928,8 @@ void GraphBasedSlamComponent::searchLoopForLatest(
         candidate.relative_transform = *relative_transform;
         candidate.has_relative_transform = true;
       }
+      candidate.triangle_inliers = triangle_inliers;
+      candidate.triangle_inlier_ratio = triangle_inlier_ratio;
       candidates.push_back(candidate);
     };
 
@@ -2440,116 +2537,157 @@ void GraphBasedSlamComponent::searchLoopForLatest(
       // candidate whose submap_id is too close to latest_idx.
       const auto votes = graphslam::triangle::accumulateVotes(
         triangle_descriptor_db_, query_kps, query_tris, hash_cfg, vote_cfg);
-      int chosen_submap_id = -1;
-      int chosen_votes = 0;
-      for (const auto & v : votes) {
-        if (v.submap_id < 0) {continue;}
-        if (latest_idx - v.submap_id < triangle_descriptor_exclude_recent_) {continue;}
-        chosen_submap_id = v.submap_id;
-        chosen_votes = v.votes;
-        break;
-      }
-      if (
-        chosen_submap_id >= 0 &&
-        chosen_votes >= triangle_descriptor_min_votes_ &&
-        !triangle_descriptor_skip_ransac_)
+
+      // Top-K verify: a permissive keypoint stage (e.g. surface_saliency)
+      // generates more hash collisions, so trusting the single top-voted
+      // submap lets one stale/aliased submap eat every vote and hand RANSAC
+      // a wrong SE(3) that NDT cannot refine. Instead, verify each of the
+      // top-K vote-getters in its own single-submap scoped_db and pick the
+      // winner by inlier_ratio (ties broken by inlier count). K=1
+      // reproduces the legacy top-1-by-votes behaviour exactly.
+      struct TriangleAttempt
       {
-        // Re-run verification scoped to the chosen submap to recover SE(3).
+        int submap_id {-1};
+        int votes {0};
+        bool verified {false};
+        graphslam::triangle::LoopCandidate cand;
+      };
+      std::vector<TriangleAttempt> attempts;
+      const int top_k = std::max(1, triangle_descriptor_verify_top_k_);
+      if (!triangle_descriptor_skip_ransac_) {
         vote_cfg.exclude_submap_id = -1;
-        graphslam::triangle::TriangleDatabase scoped_db;
-        const auto db_kps_idx = static_cast<std::size_t>(chosen_submap_id);
-        if (db_kps_idx < triangle_descriptor_per_submap_.size()) {
-          scoped_db.addSubmap(
-            chosen_submap_id,
-            triangle_descriptor_per_submap_[db_kps_idx].keypoints,
-            triangle_descriptor_per_submap_[db_kps_idx].triangles,
-            hash_cfg);
-        }
-        const auto cand = graphslam::triangle::findLoopCandidate(
-          scoped_db, query_kps, query_tris, hash_cfg, vote_cfg, verify_cfg);
-        if (cand.accepted) {
-          const double travel_distance =
-            latest_moving_distance - map_array_msg.submaps[chosen_submap_id].distance;
-          bool bev_cross_verify_ok = true;
-          double bev_cross_verify_distance = std::numeric_limits<double>::infinity();
-          if (
-            triangle_verify_with_bev_ &&
-            use_bev_descriptor_ &&
-            chosen_submap_id < bev_descriptor_db_.size() &&
-            !bev_descriptor_db_.descriptors.empty())
-          {
-            graphslam::bev::MutualVisibilityConfig mv_cfg;
-            mv_cfg.min_overlap_ratio = bev_mutual_visibility_min_overlap_ratio_;
-            mv_cfg.occupancy_eps =
-              static_cast<float>(bev_mutual_visibility_occupancy_eps_);
-            const auto fov = graphslam::bev::mutualVisibilityWithYawSearch(
-              bev_descriptor_db_.descriptors.back(),
-              bev_descriptor_db_.descriptors[chosen_submap_id],
-              chosen_submap_id,
-              bev_descriptor_yaw_bins_,
-              mv_cfg);
-            bev_cross_verify_distance = fov.valid ?
-              fov.distance : std::numeric_limits<double>::infinity();
-            bev_cross_verify_ok =
-              fov.valid && fov.distance <= triangle_verify_bev_max_distance_;
-          }
-          if (travel_distance > distance_loop_closure_ && bev_cross_verify_ok) {
-            const Eigen::Matrix3f R = cand.transform.block<3, 3>(0, 0);
-            const Eigen::Vector3f euler = R.eulerAngles(2, 1, 0);
-            double tri_yaw_rad = static_cast<double>(euler[0]);
-            while (tri_yaw_rad > M_PI) {tri_yaw_rad -= 2.0 * M_PI;}
-            while (tri_yaw_rad < -M_PI) {tri_yaw_rad += 2.0 * M_PI;}
-            const double tri_metric =
-              1.0 / (1.0 + static_cast<double>(cand.inliers));
-            add_candidate(
-              chosen_submap_id,
-              tri_metric,
-              LoopCandidate::Source::TRIANGLE_DESCRIPTOR,
-              tri_yaw_rad,
-              &cand.transform);
-            std::cout << "Triangle loop candidate: id=" << chosen_submap_id
-                      << " votes=" << chosen_votes
-                      << " inliers=" << cand.inliers
-                      << " eval_n=" << cand.eval_n
-                      << " inlier_ratio="
-                      << std::fixed << std::setprecision(3) << cand.inlier_ratio
-                      << std::defaultfloat
-                      << " yaw_deg=" << tri_yaw_rad * 180.0 / M_PI;
-            if (triangle_verify_with_bev_) {
-              std::cout << " bev_xv_dist=" << bev_cross_verify_distance;
+        for (const auto & v : votes) {
+          if (static_cast<int>(attempts.size()) >= top_k) {break;}
+          if (v.submap_id < 0) {continue;}
+          if (latest_idx - v.submap_id < triangle_descriptor_exclude_recent_) {continue;}
+          TriangleAttempt att;
+          att.submap_id = v.submap_id;
+          att.votes = v.votes;
+          if (v.votes >= triangle_descriptor_min_votes_) {
+            const auto db_kps_idx = static_cast<std::size_t>(v.submap_id);
+            if (db_kps_idx < triangle_descriptor_per_submap_.size()) {
+              graphslam::triangle::TriangleDatabase scoped_db;
+              scoped_db.addSubmap(
+                v.submap_id,
+                triangle_descriptor_per_submap_[db_kps_idx].keypoints,
+                triangle_descriptor_per_submap_[db_kps_idx].triangles,
+                hash_cfg);
+              att.cand = graphslam::triangle::findLoopCandidate(
+                scoped_db, query_kps, query_tris, hash_cfg, vote_cfg, verify_cfg);
+              att.verified = true;
             }
-            std::cout << std::endl;
-          } else if (!bev_cross_verify_ok && debug_flag_) {
-            RCLCPP_INFO(
-              get_logger(),
-              "Skip Triangle candidate %d: BEV cross-verify distance %.3f > %.3f",
-              chosen_submap_id, bev_cross_verify_distance,
-              triangle_verify_bev_max_distance_);
-          } else if (debug_flag_) {
-            RCLCPP_INFO(
-              get_logger(),
-              "Skip Triangle candidate %d (travel %.3f m <= %.3f m)",
-              chosen_submap_id, travel_distance, distance_loop_closure_);
           }
+          attempts.push_back(att);
+        }
+      }
+
+      const TriangleAttempt * best = nullptr;
+      for (const auto & att : attempts) {
+        if (!att.verified || !att.cand.accepted) {continue;}
+        if (
+          !best ||
+          att.cand.inlier_ratio > best->cand.inlier_ratio ||
+          (att.cand.inlier_ratio == best->cand.inlier_ratio &&
+          att.cand.inliers > best->cand.inliers))
+        {
+          best = &att;
+        }
+      }
+
+      if (best) {
+        const int chosen_submap_id = best->submap_id;
+        const int chosen_votes = best->votes;
+        const auto & cand = best->cand;
+        const double travel_distance =
+          latest_moving_distance - map_array_msg.submaps[chosen_submap_id].distance;
+        bool bev_cross_verify_ok = true;
+        double bev_cross_verify_distance = std::numeric_limits<double>::infinity();
+        if (
+          triangle_verify_with_bev_ &&
+          use_bev_descriptor_ &&
+          chosen_submap_id < bev_descriptor_db_.size() &&
+          !bev_descriptor_db_.descriptors.empty())
+        {
+          graphslam::bev::MutualVisibilityConfig mv_cfg;
+          mv_cfg.min_overlap_ratio = bev_mutual_visibility_min_overlap_ratio_;
+          mv_cfg.occupancy_eps =
+            static_cast<float>(bev_mutual_visibility_occupancy_eps_);
+          const auto fov = graphslam::bev::mutualVisibilityWithYawSearch(
+            bev_descriptor_db_.descriptors.back(),
+            bev_descriptor_db_.descriptors[chosen_submap_id],
+            chosen_submap_id,
+            bev_descriptor_yaw_bins_,
+            mv_cfg);
+          bev_cross_verify_distance = fov.valid ?
+            fov.distance : std::numeric_limits<double>::infinity();
+          bev_cross_verify_ok =
+            fov.valid && fov.distance <= triangle_verify_bev_max_distance_;
+        }
+        if (travel_distance > distance_loop_closure_ && bev_cross_verify_ok) {
+          const Eigen::Matrix3f R = cand.transform.block<3, 3>(0, 0);
+          const Eigen::Vector3f euler = R.eulerAngles(2, 1, 0);
+          double tri_yaw_rad = static_cast<double>(euler[0]);
+          while (tri_yaw_rad > M_PI) {tri_yaw_rad -= 2.0 * M_PI;}
+          while (tri_yaw_rad < -M_PI) {tri_yaw_rad += 2.0 * M_PI;}
+          const double tri_metric =
+            1.0 / (1.0 + static_cast<double>(cand.inliers));
+          add_candidate(
+            chosen_submap_id,
+            tri_metric,
+            LoopCandidate::Source::TRIANGLE_DESCRIPTOR,
+            tri_yaw_rad,
+            &cand.transform,
+            cand.inliers,
+            cand.inlier_ratio);
+          std::cout << "Triangle loop candidate: id=" << chosen_submap_id
+                    << " votes=" << chosen_votes
+                    << " inliers=" << cand.inliers
+                    << " eval_n=" << cand.eval_n
+                    << " inlier_ratio="
+                    << std::fixed << std::setprecision(3) << cand.inlier_ratio
+                    << std::defaultfloat
+                    << " yaw_deg=" << tri_yaw_rad * 180.0 / M_PI;
+          if (triangle_verify_with_bev_) {
+            std::cout << " bev_xv_dist=" << bev_cross_verify_distance;
+          }
+          std::cout << std::endl;
+        } else if (!bev_cross_verify_ok && debug_flag_) {
+          RCLCPP_INFO(
+            get_logger(),
+            "Skip Triangle candidate %d: BEV cross-verify distance %.3f > %.3f",
+            chosen_submap_id, bev_cross_verify_distance,
+            triangle_verify_bev_max_distance_);
         } else if (debug_flag_) {
-          // Surface the ratio gate too: an inlier count that beats the
-          // absolute min can still fail when min_inlier_ratio is set and
-          // eval_n is high. Knowing the ratio is the only way operators
-          // can tune precision_floor without re-running.
+          RCLCPP_INFO(
+            get_logger(),
+            "Skip Triangle candidate %d (travel %.3f m <= %.3f m)",
+            chosen_submap_id, travel_distance, distance_loop_closure_);
+        }
+      } else if (debug_flag_) {
+        // Best is null: either no attempt was verified+accepted, or nothing
+        // reached verification at all. Report the first verified-but-rejected
+        // attempt if there is one (surfaces the ratio gate: an inlier count
+        // that beats the absolute min can still fail when min_inlier_ratio
+        // is set and eval_n is high), else fall back to the top raw vote.
+        const TriangleAttempt * rejected = nullptr;
+        for (const auto & att : attempts) {
+          if (att.verified) {rejected = &att; break;}
+        }
+        if (rejected) {
           RCLCPP_INFO(
             get_logger(),
             "Triangle votes for %d (%d votes) rejected: inliers %d/%d "
             "(ratio %.3f) below min_inliers=%d min_inlier_ratio=%.3f",
-            chosen_submap_id, chosen_votes, cand.inliers, cand.eval_n,
-            cand.inlier_ratio, triangle_descriptor_min_inliers_,
-            triangle_descriptor_min_inlier_ratio_);
+            rejected->submap_id, rejected->votes, rejected->cand.inliers,
+            rejected->cand.eval_n, rejected->cand.inlier_ratio,
+            triangle_descriptor_min_inliers_, triangle_descriptor_min_inlier_ratio_);
+        } else if (!votes.empty()) {
+          RCLCPP_INFO(
+            get_logger(),
+            "Triangle top vote %d only %d votes (need %d) or excluded",
+            votes.front().submap_id, votes.front().votes,
+            triangle_descriptor_min_votes_);
         }
-      } else if (debug_flag_ && !votes.empty()) {
-        RCLCPP_INFO(
-          get_logger(),
-          "Triangle top vote %d only %d votes (need %d) or excluded",
-          votes.front().submap_id, votes.front().votes,
-          triangle_descriptor_min_votes_);
       }
     }
   }
@@ -2777,10 +2915,26 @@ void GraphBasedSlamComponent::searchLoopForLatest(
       best_attempt = candidate_result;
     }
 
+    // Triangle inliers are the correctness signal; GICP/NDT fitness is an
+    // overlap signal. A candidate only earns the relaxed triangle fitness
+    // ceiling when its RANSAC inlier evidence clears the (independent,
+    // typically stricter) guardrail below -- weak triangles still face the
+    // generic threshold_loop_closure_score_. Fitness keeps flowing into
+    // loop_edge_info_weight_ unchanged either way (see doPoseAdjustment),
+    // so a thin-overlap accepted loop still ends up a weaker edge.
+    const bool triangle_strong_evidence =
+      candidate.source == LoopCandidate::Source::TRIANGLE_DESCRIPTOR &&
+      triangle_loop_closure_score_threshold_ > 0.0 &&
+      (triangle_relaxed_fitness_min_inliers_ < 0 ||
+      candidate.triangle_inliers >= triangle_relaxed_fitness_min_inliers_) &&
+      (triangle_relaxed_fitness_min_inlier_ratio_ < 0.0 ||
+      candidate.triangle_inlier_ratio >= triangle_relaxed_fitness_min_inlier_ratio_);
     const double loop_score_threshold =
       (candidate.source == LoopCandidate::Source::SCAN_CONTEXT &&
       scan_context_loop_closure_score_threshold_ > 0.0) ?
-      scan_context_loop_closure_score_threshold_ : threshold_loop_closure_score_;
+      scan_context_loop_closure_score_threshold_ :
+      triangle_strong_evidence ? triangle_loop_closure_score_threshold_ :
+      threshold_loop_closure_score_;
 
     if (fitness_score >= loop_score_threshold) {
       std::ostringstream diag;

@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(where wsl *)",
+      "Bash(docker --version)",
+      "Bash(wsl -l -v)",
+      "Bash(wsl -d Ubuntu -- bash -lc \"which colcon; which cmake; ls /opt/ros 2>&1; echo done\")",
+      "Bash(wsl -d Ubuntu -- bash -lc \"ls /home/*/husky 2>&1 || ls ~/ 2>&1 || echo none\")",
+      "Bash(wsl -d Ubuntu -- bash -lc \"ls -la /mnt/c/Users/Username/OneDrive/Desktop/husky 2>&1 | head -20\")"
+    ]
+  }
+}

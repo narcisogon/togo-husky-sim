@@ -12,6 +12,21 @@ graph_based_slam:
       deterministic_loop_scheduling: false
       threshold_loop_closure_score: 1.5
       scan_context_loop_closure_score_threshold: -1.0
+      # Relaxed fitness ceiling for TRIANGLE_DESCRIPTOR candidates with strong
+      # RANSAC inlier evidence (mirrors scan_context_loop_closure_score_threshold
+      # above). -1.0 = disabled (fall back to threshold_loop_closure_score).
+      # Triangle inliers are the correctness signal; NDT/GICP fitness is an
+      # overlap signal -- a thin-overlap reverse-direction revisit can have
+      # strong inliers and poor fitness purely from one-sided sensing. Fitness
+      # still scales loop_edge_info_weight downstream, so relaxing this never
+      # bypasses that weighting, only the accept/reject gate.
+      triangle_loop_closure_score_threshold: -1.0
+      # Guardrail: the relaxed threshold above only applies when a candidate's
+      # inlier evidence clears these (independent of, and typically stricter
+      # than, triangle_descriptor_min_inliers / min_inlier_ratio below).
+      # -1 / -1.0 = no extra bar beyond that base RANSAC gate.
+      triangle_relaxed_fitness_min_inliers: -1
+      triangle_relaxed_fitness_min_inlier_ratio: -1.0
       distance_loop_closure: 30.0
       range_of_searching_loop_closure: 20.0
       search_submap_num: 3
@@ -63,6 +78,11 @@ graph_based_slam:
       # neighborhoods and keeps high-edgeness (column edge / wall corner)
       # supports - prefer this for narrow-FOV LiDAR (Livox MID-360) and
       # indoor scenes where BEV max-height repeatability collapses.
+      # "surface_saliency" detrends a robust ground-plane fit out of the BEV
+      # grid and picks curvature extrema (crater rims, curbs, boulders) -
+      # prefer this for open/sloped terrain (parking lots, hills) where
+      # neither bev_max_height (no vertical prominence) nor edge_3d (no edge
+      # response) finds enough keypoints.
       triangle_descriptor_keypoint_mode: "bev_max_height"
       triangle_descriptor_grid_size_m: 60.0
       triangle_descriptor_grid_cells: 100
@@ -76,6 +96,14 @@ graph_based_slam:
       triangle_descriptor_edge_min_neighbors: 6
       triangle_descriptor_edge_min_edgeness: 0.5
       triangle_descriptor_edge_nms_radius_m: 2.0
+      # surface_saliency-mode tuning. plane_fit_percentile is the lower
+      # height-percentile of populated cells used to fit the ground plane;
+      # curvature_radius_cells is the neighborhood for the curvature
+      # response; min_saliency_percentile is a soft floor (0 = off, i.e.
+      # pure top-N rank selects the keypoints - the anti-starvation default).
+      triangle_descriptor_surface_plane_fit_percentile: 0.3
+      triangle_descriptor_surface_curvature_radius_cells: 1
+      triangle_descriptor_surface_min_saliency_percentile: 0.0
       triangle_descriptor_min_edge_m: 2.0
       triangle_descriptor_max_edge_m: 50.0
       triangle_descriptor_max_triangles: 3000
@@ -89,6 +117,12 @@ graph_based_slam:
       triangle_descriptor_quad_feature_bin_m: 0.0
       triangle_descriptor_min_votes: 6
       triangle_descriptor_min_inliers: 4
+      # Verify the top-K vote-getters (each in its own scoped single-submap
+      # database) and pick the winner by inlier_ratio instead of trusting
+      # top-1-by-votes. K=1 reproduces the legacy behaviour bit-for-bit;
+      # raise for permissive keypoint modes (surface_saliency) where hash
+      # collisions make the top-voted submap unreliable on its own.
+      triangle_descriptor_verify_top_k: 1
       # Precision floor recipe: combine triangle_descriptor_min_inliers
       # (absolute) AND triangle_descriptor_min_inlier_ratio (relative).
       # Both must pass for an emit -> stricter when max_pairs is high.

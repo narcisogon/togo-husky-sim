@@ -50,6 +50,9 @@ EXPECTED_PARAM_KEYS = {
     'triangle_descriptor_edge_min_neighbors',
     'triangle_descriptor_edge_min_edgeness',
     'triangle_descriptor_edge_nms_radius_m',
+    'triangle_descriptor_surface_plane_fit_percentile',
+    'triangle_descriptor_surface_curvature_radius_cells',
+    'triangle_descriptor_surface_min_saliency_percentile',
     'triangle_descriptor_min_edge_m',
     'triangle_descriptor_max_edge_m',
     'triangle_descriptor_max_triangles',
@@ -57,6 +60,7 @@ EXPECTED_PARAM_KEYS = {
     'triangle_descriptor_quad_feature_bin_m',
     'triangle_descriptor_min_votes',
     'triangle_descriptor_min_inliers',
+    'triangle_descriptor_verify_top_k',
     'triangle_descriptor_inlier_translation_m',
     'triangle_descriptor_inlier_rotation_deg',
     'triangle_descriptor_exclude_recent',
@@ -67,9 +71,12 @@ EXPECTED_PARAM_KEYS = {
     'triangle_descriptor_refine_se3_with_all_inliers',
     'triangle_verify_with_bev',
     'triangle_verify_bev_max_distance',
+    'triangle_loop_closure_score_threshold',
+    'triangle_relaxed_fitness_min_inliers',
+    'triangle_relaxed_fitness_min_inlier_ratio',
 }
 
-VALID_KEYPOINT_MODES = {'bev_max_height', 'edge_3d'}
+VALID_KEYPOINT_MODES = {'bev_max_height', 'edge_3d', 'surface_saliency'}
 
 PARAM_FILES = [
     REPO_ROOT / 'graph_based_slam' / 'param' / 'graphbasedslam.yaml',
@@ -179,6 +186,24 @@ def test_indoor_preset_uses_tighter_edge3d():
 
 
 @pytest.mark.parametrize('path', PARAM_FILES, ids=lambda p: p.name)
+def test_relaxed_fitness_gate_defaults_disabled(path):
+    """
+    Relaxed triangle fitness ceiling must default to disabled (-1) everywhere.
+
+    It bypasses the generic threshold_loop_closure_score gate for strong-inlier
+    triangle candidates, so every shipped preset must opt in explicitly per
+    dataset rather than inherit a silently-relaxed default.
+    """
+    params = _load_graph_params(path)
+    assert params['triangle_loop_closure_score_threshold'] == -1.0, (
+        f'{path.name}: triangle_loop_closure_score_threshold must default to '
+        '-1.0 (disabled)'
+    )
+    assert params['triangle_relaxed_fitness_min_inliers'] == -1
+    assert params['triangle_relaxed_fitness_min_inlier_ratio'] == -1.0
+
+
+@pytest.mark.parametrize('path', PARAM_FILES, ids=lambda p: p.name)
 def test_bev_cross_verify_defaults_off(path):
     """Cross-verification must be opt-in so default workflows stay unchanged."""
     params = _load_graph_params(path)
@@ -207,6 +232,37 @@ def test_edge_keypoint_params_sane(path):
         f'{path.name}: edgeness threshold {edgeness} out of [0, 1]'
     )
     assert params['triangle_descriptor_edge_nms_radius_m'] >= 0.0
+
+
+@pytest.mark.parametrize('path', PARAM_FILES, ids=lambda p: p.name)
+def test_surface_saliency_params_sane(path):
+    params = _load_graph_params(path)
+    pct = params['triangle_descriptor_surface_plane_fit_percentile']
+    assert 0.0 < pct <= 1.0, (
+        f'{path.name}: surface_plane_fit_percentile {pct} out of (0, 1]'
+    )
+    assert params['triangle_descriptor_surface_curvature_radius_cells'] >= 1
+    floor_pct = params['triangle_descriptor_surface_min_saliency_percentile']
+    assert 0.0 <= floor_pct <= 1.0, (
+        f'{path.name}: surface_min_saliency_percentile {floor_pct} out of [0, 1]'
+    )
+
+
+@pytest.mark.parametrize('path', PARAM_FILES, ids=lambda p: p.name)
+def test_verify_top_k_defaults_to_legacy_top1(path):
+    """
+    triangle_descriptor_verify_top_k must default to 1 everywhere.
+
+    K=1 reproduces the legacy top-1-by-votes selection bit-for-bit, so every
+    shipped preset must stay at 1 until an operator explicitly opts a
+    dataset into multi-candidate verification (the surface_saliency
+    precision backstop).
+    """
+    params = _load_graph_params(path)
+    assert params['triangle_descriptor_verify_top_k'] == 1, (
+        f'{path.name}: triangle_descriptor_verify_top_k must default to 1 '
+        '(legacy top-1-by-votes) so shipped presets stay unchanged'
+    )
 
 
 def test_mid360_preset_prefers_edge_keypoints():

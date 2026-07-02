@@ -326,6 +326,179 @@ TEST(TriangleDescriptorEdge3DKeypoint, DispatcherSelectsCorrectMode)
   EXPECT_GE(edge_kps.size(), 3u);
 }
 
+// ----- surface-saliency keypoint extraction -----
+
+TEST(TriangleDescriptorSurfaceSaliencyKeypoint, EmptyCloudYieldsNoKeypoints)
+{
+  pcl::PointCloud<pcl::PointXYZI> cloud;
+  const auto kps = extractKeypointsSurfaceSaliency(cloud, {});
+  EXPECT_TRUE(kps.empty());
+}
+
+TEST(TriangleDescriptorSurfaceSaliencyKeypoint, FlatGroundStillYieldsKeypointsUnlikeBEV)
+{
+  // Pure flat ground: every cell has ~zero curvature saliency. BEV_MAX_HEIGHT
+  // would starve here (its hard min_salience_m gate never clears on flat
+  // terrain); surface_saliency must still rank by percentile and return
+  // ~max_keypoints, which is the anti-starvation property this mode exists
+  // for (parking lots, open terrain).
+  pcl::PointCloud<pcl::PointXYZI> cloud;
+  addGroundPatch(cloud, -10.0f, 10.0f, -10.0f, 10.0f, 0.5f);
+
+  KeypointExtractionConfig cfg;
+  cfg.grid_size_m = 20.0;
+  cfg.grid_cells = 20;
+  cfg.max_keypoints = 20;
+  cfg.min_salience_m = 0.8f;  // BEV's hard gate; flat ground never clears it.
+  cfg.surface_plane_fit_percentile = 0.5;
+  cfg.surface_curvature_radius_cells = 1;
+  cfg.surface_min_saliency_percentile = 0.0;
+
+  const auto bev_kps = extractKeypointsBEV(cloud, cfg);
+  EXPECT_TRUE(bev_kps.empty()) <<
+    "sanity check: BEV's hard min_salience_m gate starves on flat ground";
+
+  const auto surface_kps = extractKeypointsSurfaceSaliency(cloud, cfg);
+  EXPECT_EQ(static_cast<int>(surface_kps.size()), cfg.max_keypoints) <<
+    "surface_saliency must rank by percentile, not an absolute floor, so "
+    "flat terrain still yields ~max_keypoints";
+}
+
+TEST(TriangleDescriptorSurfaceSaliencyKeypoint, PicksCurbEdgesOverFlatGrade)
+{
+  pcl::PointCloud<pcl::PointXYZI> cloud;
+  addGroundPatch(cloud, -10.0f, 10.0f, -10.0f, 10.0f, 0.5f);
+  // Raised curb strip: x in [-3, -1], 0.2 m above the surrounding flat
+  // ground -- the curvature response should fire at the step edges, not the
+  // flat interior on either side (nor the flat top of the curb itself).
+  for (float x = -3.0f; x <= -1.0f; x += 0.5f) {
+    for (float y = -10.0f; y <= 10.0f; y += 0.5f) {
+      pcl::PointXYZI p;
+      p.x = x;
+      p.y = y;
+      p.z = 0.2f;
+      p.intensity = 1.0f;
+      cloud.push_back(p);
+    }
+  }
+
+  KeypointExtractionConfig cfg;
+  cfg.grid_size_m = 20.0;
+  cfg.grid_cells = 20;
+  cfg.max_keypoints = 6;
+  cfg.surface_plane_fit_percentile = 0.5;
+  cfg.surface_curvature_radius_cells = 1;
+  cfg.surface_min_saliency_percentile = 0.0;
+  cfg.edge_nms_radius_m = 2.0f;
+  const auto kps = extractKeypointsSurfaceSaliency(cloud, cfg);
+  ASSERT_FALSE(kps.empty());
+  for (const auto & kp : kps) {
+    EXPECT_GT(kp.salience, 0.01f);
+    EXPECT_LE(std::abs(kp.position.x() - (-2.0f)), 3.0f) <<
+      "kp at x=" << kp.position.x() << " is not near the curb edges";
+  }
+}
+
+TEST(TriangleDescriptorSurfaceSaliencyKeypoint, DetrendsSlopeAndPicksCraterRim)
+{
+  pcl::PointCloud<pcl::PointXYZI> cloud;
+  const float slope = 0.05f;  // 5% grade
+  for (float x = -10.0f; x <= 10.0f; x += 0.5f) {
+    for (float y = -10.0f; y <= 10.0f; y += 0.5f) {
+      pcl::PointXYZI p;
+      p.x = x;
+      p.y = y;
+      p.z = slope * x;
+      p.intensity = 0.5f;
+      cloud.push_back(p);
+    }
+  }
+  // Crater rim: a ring raised 0.4 m above the local (sloped) ground plane,
+  // centered at (3, 0) with radius 2 m.
+  const float cx = 3.0f;
+  const float cy = 0.0f;
+  const float radius = 2.0f;
+  for (int i = 0; i < 24; ++i) {
+    const float theta = static_cast<float>(i) * (2.0f * static_cast<float>(M_PI) / 24.0f);
+    const float x = cx + radius * std::cos(theta);
+    const float y = cy + radius * std::sin(theta);
+    pcl::PointXYZI p;
+    p.x = x;
+    p.y = y;
+    p.z = slope * x + 0.4f;
+    p.intensity = 1.0f;
+    cloud.push_back(p);
+  }
+
+  KeypointExtractionConfig cfg;
+  cfg.grid_size_m = 20.0;
+  cfg.grid_cells = 20;
+  cfg.max_keypoints = 6;
+  cfg.surface_plane_fit_percentile = 0.5;
+  cfg.surface_curvature_radius_cells = 1;
+  cfg.surface_min_saliency_percentile = 0.0;
+  cfg.edge_nms_radius_m = 1.5f;
+  const auto kps = extractKeypointsSurfaceSaliency(cloud, cfg);
+  ASSERT_FALSE(kps.empty());
+  for (const auto & kp : kps) {
+    const float dx = kp.position.x() - cx;
+    const float dy = kp.position.y() - cy;
+    const float dist_from_center = std::sqrt(dx * dx + dy * dy);
+    // Keypoints must cluster near the crater rim, not the sloped grade's
+    // outer edge -- a curvature response computed without detrending would
+    // false-positive there from the asymmetric grid-boundary neighbor
+    // window, which is exactly the failure this mode's plane fit avoids.
+    EXPECT_LT(dist_from_center, 4.0f) <<
+      "kp at (" << kp.position.x() << ", " << kp.position.y() << ") not near crater rim";
+    EXPECT_LT(std::abs(kp.position.x()), 8.0f) << "kp landed on the grade's outer edge";
+  }
+}
+
+TEST(TriangleDescriptorSurfaceSaliencyKeypoint, RespectsMaxKeypoints)
+{
+  pcl::PointCloud<pcl::PointXYZI> cloud;
+  addGroundPatch(cloud, -10.0f, 10.0f, -10.0f, 10.0f, 0.5f);
+  for (float x = -3.0f; x <= -1.0f; x += 0.5f) {
+    for (float y = -10.0f; y <= 10.0f; y += 0.5f) {
+      pcl::PointXYZI p;
+      p.x = x;
+      p.y = y;
+      p.z = 0.2f;
+      p.intensity = 1.0f;
+      cloud.push_back(p);
+    }
+  }
+  KeypointExtractionConfig cfg;
+  cfg.grid_size_m = 20.0;
+  cfg.grid_cells = 20;
+  cfg.max_keypoints = 3;
+  cfg.surface_plane_fit_percentile = 0.5;
+  cfg.surface_curvature_radius_cells = 1;
+  cfg.edge_nms_radius_m = 2.0f;
+  const auto kps = extractKeypointsSurfaceSaliency(cloud, cfg);
+  EXPECT_EQ(3u, kps.size());
+}
+
+TEST(TriangleDescriptorSurfaceSaliencyKeypoint, DispatcherSelectsCorrectMode)
+{
+  pcl::PointCloud<pcl::PointXYZI> cloud;
+  addGroundPatch(cloud, -10.0f, 10.0f, -10.0f, 10.0f, 0.5f);
+
+  KeypointExtractionConfig bev_cfg;
+  bev_cfg.grid_size_m = 20.0;
+  bev_cfg.grid_cells = 20;
+  bev_cfg.mode = KeypointMode::BEV_MAX_HEIGHT;
+  bev_cfg.min_salience_m = 0.8f;
+  const auto bev_kps = extractKeypoints(cloud, bev_cfg);
+  EXPECT_TRUE(bev_kps.empty());
+
+  KeypointExtractionConfig surface_cfg = bev_cfg;
+  surface_cfg.mode = KeypointMode::SURFACE_SALIENCY;
+  surface_cfg.max_keypoints = 10;
+  const auto surface_kps = extractKeypoints(cloud, surface_cfg);
+  EXPECT_EQ(static_cast<int>(surface_kps.size()), surface_cfg.max_keypoints);
+}
+
 // ----- triangle enumeration -----
 
 std::vector<Keypoint> threePoints(

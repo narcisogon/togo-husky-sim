@@ -8,6 +8,9 @@ graph_based_slam:
     loop_detection_period: 1000
     threshold_loop_closure_score: 15.0
     scan_context_loop_closure_score_threshold: -1.0
+    triangle_loop_closure_score_threshold: -1.0
+    triangle_relaxed_fitness_min_inliers: -1
+    triangle_relaxed_fitness_min_inlier_ratio: -1.0
     distance_loop_closure: 100.0
     range_of_searching_loop_closure: 50.0
     search_submap_num: 5
@@ -70,6 +73,9 @@ graph_based_slam:
     triangle_descriptor_edge_min_neighbors: 6
     triangle_descriptor_edge_min_edgeness: 0.5
     triangle_descriptor_edge_nms_radius_m: 1.5
+    triangle_descriptor_surface_plane_fit_percentile: 0.3
+    triangle_descriptor_surface_curvature_radius_cells: 1
+    triangle_descriptor_surface_min_saliency_percentile: 0.0
     triangle_descriptor_min_edge_m: 2.0
     triangle_descriptor_max_edge_m: 30.0
     triangle_descriptor_max_triangles: 2000
@@ -80,6 +86,7 @@ graph_based_slam:
     triangle_descriptor_quad_feature_bin_m: 0.0
     triangle_descriptor_min_votes: 8
     triangle_descriptor_min_inliers: 5
+    triangle_descriptor_verify_top_k: 1
     # MID-360 narrower FOV / fewer keypoints means evaluated pair counts are
     # already lower than a spinning 360° LiDAR; cap max_pairs at 16 so
     # min_inlier_ratio (when set) is more informative for the operator,

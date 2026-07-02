@@ -1437,8 +1437,22 @@ void dlio::OdomNode::callbackPointCloud(const sensor_msgs::msg::PointCloud2::Sha
   // Build keyframe normals and submap if needed (and if we're not already waiting)
   if (this->new_submap_is_ready) {
     this->main_loop_running = false;
+    // Anchor the submap's spatial KNN query to the last ACCEPTED pose while
+    // this tick's registration was rejected, not the live pose. buildSubmap
+    // selects keyframes purely by proximity to whatever state it's given;
+    // during a reject streak this->state is driven by unconstrained IMU
+    // dead-reckoning, so feeding it the drifting estimate makes submap
+    // selection chase the wrong location and pick increasingly irrelevant
+    // keyframes -- compounding the very mismatch that caused the reject in
+    // the first place, with no way to self-correct since keyframe/submap
+    // growth is itself gated on acceptance. last_accepted_state_ is the
+    // last position GICP actually verified, so the keyframes that are truly
+    // still nearby stay in the candidate set even while the live estimate
+    // drifts.
+    const State submap_query_state =
+      accepted_registration ? this->state : this->last_accepted_state_;
     this->submap_future =
-      std::async( std::launch::async, &dlio::OdomNode::buildKeyframesAndSubmap, this, this->state );
+      std::async( std::launch::async, &dlio::OdomNode::buildKeyframesAndSubmap, this, submap_query_state );
   } else {
     lock.lock();
     this->main_loop_running = false;
@@ -1714,10 +1728,17 @@ bool dlio::OdomNode::getNextPose() {
     this->spin_protection_enabled_ && angular_rate > this->spin_protection_angular_rate_;
   const bool pre_align_timing_protection_active =
     this->timing_protection_enabled_ && pre_align_imu_age_ms > this->timing_protection_imu_age_ms_;
+  // Only cap iterations while a protection condition is actively true for
+  // THIS tick. Previously this also capped whenever bad_correction_streak_
+  // > 0, which meant a single rejected correction permanently hobbled every
+  // subsequent GICP attempt (fewer iterations -> harder to converge -> more
+  // likely to reject again) until the streak happened to clear -- a
+  // self-reinforcing loop that made recovery from a bad correction less
+  // likely the longer it persisted, independent of whether spin/timing
+  // protection was still actually active.
   const bool use_timing_iteration_cap =
     spin_protection_active ||
-    pre_align_timing_protection_active ||
-    this->bad_correction_streak_.load() > 0;
+    pre_align_timing_protection_active;
   const int align_max_iterations =
     use_timing_iteration_cap
       ? std::max(1, std::min(this->gicp_max_iter_, this->timing_protection_max_iterations_))
